@@ -273,31 +273,25 @@ static int apple_probe_per_dcp(struct device *dev,
 	struct apple_connector *connector;
 	struct apple_encoder *enc;
 	struct drm_plane *planes[DCP_MAX_PLANES];
-	int ret, i;
-	int immutable_zpos = 0;
+	unsigned long *iomfb_surfaces = dcp_get_iomfb_surfaces(dcp);
+	int ret;
+	u32 surf;
+	int zpos = 0;
 	bool supports_l10r = !dcp_fw_compat_is_12_x(dcp);
+	enum drm_plane_type plane_type;
 
-	planes[0] = apple_plane_init(drm, 1U << num, supports_l10r,
-				     DRM_PLANE_TYPE_PRIMARY);
-	if (IS_ERR(planes[0]))
-		return PTR_ERR(planes[0]);
-	ret = drm_plane_create_zpos_immutable_property(planes[0], immutable_zpos);
-	if (ret) {
-		return ret;
-	}
+	for_each_set_bit(surf, iomfb_surfaces, DCP_MAX_PLANES) {
+		plane_type = (zpos == 0) ? DRM_PLANE_TYPE_PRIMARY : DRM_PLANE_TYPE_OVERLAY;
+		planes[zpos] = apple_plane_init(drm, 1U << num, surf,
+						supports_l10r, plane_type);
+		if (IS_ERR(planes[zpos]))
+			return PTR_ERR(planes[zpos]);
 
-
-	/* Set up our other planes */
-	for (i = 1; i < DCP_MAX_PLANES; i++) {
-		planes[i] = apple_plane_init(drm, 1U << num, supports_l10r,
-					     DRM_PLANE_TYPE_OVERLAY);
-		if (IS_ERR(planes[i]))
-			return PTR_ERR(planes[i]);
-		immutable_zpos++;
-		ret = drm_plane_create_zpos_immutable_property(planes[i], immutable_zpos);
-		if (ret) {
+		ret = drm_plane_create_zpos_immutable_property(planes[zpos], zpos);
+		if (ret)
 			return ret;
-		}
+
+		zpos++;
 	}
 
 	/*
