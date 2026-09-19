@@ -409,7 +409,7 @@ impl<T: GpuStruct, U: Allocation<T>> GpuObject<T, U> {
         };
         let q = &*ret.inner as *const T;
         // SAFETY: `p` is guaranteed to be valid per the Allocation invariant.
-        unsafe { raw_init(&*q, gpu_ptr).__pinned_init(p) }?;
+        unsafe { raw_init(&*q, gpu_ptr).__init(p) }?;
         Ok(ret)
     }
 
