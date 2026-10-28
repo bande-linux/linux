@@ -13,6 +13,7 @@
 
 use core::any::Any;
 use core::ops::Range;
+use core::ptr::NonNull;
 use core::slice;
 use core::sync::atomic::{
     AtomicBool,
@@ -44,6 +45,7 @@ use kernel::{
         },
         Arc,
         Mutex,
+        SetOnce,
         UniqueArc, //
     },
     time::{
@@ -51,7 +53,6 @@ use kernel::{
         Instant,
         Monotonic, //
     },
-    types::ForeignOwnable, //
 };
 
 use crate::alloc::Allocator;
@@ -236,6 +237,9 @@ pub(crate) struct SequenceIDs {
 #[versions(AGX)]
 #[pin_data]
 pub(crate) struct GpuManager {
+    // Declared first so it is dropped first: once the client is freed no callback can
+    // reach the fields below through `ManagerPtr`.
+    rtkit: SetOnce<Pin<KBox<rtkit::RtKit<GpuManager::ver>>>>,
     dev: AsahiDevRef,
     cfg: &'static hw::HwConfig,
     dyncfg: hw::DynConfig,
@@ -246,8 +250,6 @@ pub(crate) struct GpuManager {
     alloc: Mutex<KernelAllocators>,
     io_mappings: KVec<mmu::KernelMapping>,
     next_mmio_iova: u64,
-    #[pin]
-    rtkit: Mutex<Option<rtkit::RtKit<GpuManager::ver>>>,
     #[pin]
     rx_channels: Mutex<RxChannels::ver>,
     #[pin]
@@ -354,13 +356,38 @@ impl rtkit::Buffer for RtkitObject {
     }
 }
 
+/// The [`GpuManager`] that owns an RTKit client, as seen by that client's callbacks.
+///
+/// # Invariants
+///
+/// Points to the pinned `GpuManager` whose `rtkit` field holds the client, so it is valid for
+/// as long as the client exists: the field is declared first and dropped first.
+#[versions(AGX)]
+pub(crate) struct ManagerPtr(NonNull<GpuManager::ver>);
+
+// SAFETY: `GpuManager` is `Send + Sync`; the pointer is only turned into a shared reference.
+#[versions(AGX)]
+unsafe impl Send for ManagerPtr::ver {}
+// SAFETY: See the `Send` impl.
+#[versions(AGX)]
+unsafe impl Sync for ManagerPtr::ver {}
+
+#[versions(AGX)]
+impl ManagerPtr::ver {
+    fn get(&self) -> &GpuManager::ver {
+        // SAFETY: Valid per the type invariant.
+        unsafe { self.0.as_ref() }
+    }
+}
+
 #[versions(AGX)]
 #[vtable]
 impl rtkit::Operations for GpuManager::ver {
-    type Data = Arc<GpuManager::ver>;
+    type Data = ManagerPtr::ver;
     type Buffer = RtkitObject;
 
-    fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, ep: u8, msg: u64) {
+    fn recv_message(rtk: &rtkit::RtKit<Self>, ep: u8, msg: u64) {
+        let data = rtk.data().get();
         let dev = &data.dev;
         //dev_info!(dev.as_ref(), "RtKit message: {:#x}:{:#x}\n", ep, msg);
 
@@ -374,10 +401,11 @@ impl rtkit::Operations for GpuManager::ver {
         ch.fw_log.poll();
         ch.ktrace.poll();
         ch.stats.poll();
-        ch.event.poll();
+        ch.event.poll(data);
     }
 
-    fn crashed(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _crashlog: Option<&[u8]>) {
+    fn crashed(rtk: &rtkit::RtKit<Self>, _crashlog: Option<&[u8]>) {
+        let data = rtk.data().get();
         let dev = &data.dev;
 
         data.crashed.store(true, Ordering::Relaxed);
@@ -391,9 +419,10 @@ impl rtkit::Operations for GpuManager::ver {
     }
 
     fn shmem_alloc(
-        data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        rtk: &rtkit::RtKit<Self>,
         size: usize,
     ) -> Result<Self::Buffer> {
+        let data = rtk.data().get();
         let dev = &data.dev;
         mod_dev_dbg!(dev, "shmem_alloc() {:#x} bytes\n", size);
 
@@ -602,17 +631,23 @@ impl GpuManager::ver {
 
         let mgr = Arc::from(mgr);
 
-        let rtkit =
-            rtkit::RtKit::<GpuManager::ver>::new(dev.as_ref().as_ref(), None, 0, mgr.clone())?;
-
-        *mgr.rtkit.lock() = Some(rtkit);
-
-        {
-            let mut rxc = mgr.rx_channels.lock();
-            rxc.event.set_manager(mgr.clone());
-        }
+        let rtkit = KBox::pin_init(
+            rtkit::RtKit::<GpuManager::ver>::new(
+                dev.as_ref().as_ref(),
+                None,
+                0,
+                Ok::<_, Error>(ManagerPtr::ver(NonNull::from(&*mgr))),
+            ),
+            GFP_KERNEL,
+        )?;
+        mgr.rtkit.populate(rtkit);
 
         Ok(mgr)
+    }
+
+    /// Returns the RTKit client of the GPU coprocessor.
+    fn rtkit(&self) -> Result<&rtkit::RtKit<GpuManager::ver>> {
+        self.rtkit.as_ref().map(|r| r.as_ref().get_ref()).ok_or(ENODEV)
     }
 
     /// Return a mutable reference to the initdata member
@@ -763,7 +798,7 @@ impl GpuManager::ver {
                 uat: KBox::<mmu::Uat>::into_inner(uat),
                 io_mappings: KVec::new(),
                 next_mmio_iova: IOVA_KERN_MMIO_RANGE.start,
-                rtkit <- new_mutex!(None, "rtkit"),
+                rtkit: SetOnce::new(),
                 crashed: AtomicBool::new(false),
                 event_manager,
                 alloc <- new_mutex!(alloc, "alloc"),
@@ -1128,8 +1163,7 @@ impl GpuManager::ver {
         job.run(&mut pipe);
         mod_dev_dbg!(self.dev, "GPU: run_job: ring doorbell\n");
 
-        let mut guard = self.rtkit.lock();
-        let rtk = guard.as_mut().as_pin_mut().unwrap();
+        let rtk = self.rtkit()?;
         rtk.send_message(
             EP_DOORBELL,
             MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2),
@@ -1199,8 +1233,7 @@ impl GpuManager::ver {
         let token = txch.device_control.send(&dc);
 
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
+            let rtk = self.rtkit()?;
             rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         }
 
@@ -1236,17 +1269,13 @@ impl GpuManager for GpuManager::ver {
         );
 
         let initdata = self.initdata.gpu_va().get();
-        let mut guard = self.rtkit.lock();
-        let mut rtk = guard.as_mut().as_pin_mut().unwrap();
+        let rtk = self.rtkit()?;
 
-        rtk.as_mut().boot()?;
-        rtk.as_mut().start_endpoint(EP_FIRMWARE)?;
-        rtk.as_mut().start_endpoint(EP_DOORBELL)?;
-        rtk.as_mut()
-            .send_message(EP_FIRMWARE, MSG_INIT | (initdata & INIT_DATA_MASK))?;
-        rtk.as_mut()
-            .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
-        core::mem::drop(guard);
+        rtk.boot()?;
+        rtk.start_endpoint(EP_FIRMWARE)?;
+        rtk.start_endpoint(EP_DOORBELL)?;
+        rtk.send_message(EP_FIRMWARE, MSG_INIT | (initdata & INIT_DATA_MASK))?;
+        rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
 
         self.kick_firmware()?;
         Ok(())
@@ -1352,8 +1381,7 @@ impl GpuManager for GpuManager::ver {
             return Err(ENODEV);
         }
 
-        let mut guard = self.rtkit.lock();
-        let rtk = guard.as_mut().as_pin_mut().unwrap();
+        let rtk = self.rtkit()?;
         rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_KICKFW)?;
 
         Ok(())
@@ -1393,8 +1421,7 @@ impl GpuManager for GpuManager::ver {
 
         let token = txch.device_control.send(&dc);
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
+            let rtk = self.rtkit()?;
             rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         }
 
@@ -1503,8 +1530,7 @@ impl GpuManager for GpuManager::ver {
 
         let token = txch.device_control.send(&dc);
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
+            let rtk = self.rtkit()?;
             if rtk
                 .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
                 .is_err()
@@ -1550,8 +1576,7 @@ impl GpuManager for GpuManager::ver {
 
         txch.device_control.send(&dc);
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
+            let rtk = self.rtkit()?;
             if rtk
                 .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
                 .is_err()
@@ -1569,8 +1594,7 @@ impl GpuManager for GpuManager::ver {
         let mut fwctl = self.fwctl_channel.lock();
         let token = fwctl.send(&msg);
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
+            let rtk = self.rtkit()?;
             rtk.send_message(EP_DOORBELL, MSG_FWCTL)?;
         }
         fwctl.wait_for(token)?;

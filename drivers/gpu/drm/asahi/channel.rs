@@ -316,7 +316,6 @@ pub(crate) struct EventChannel {
     ch: RxChannel<ChannelState, RawEventMsg>,
     ev_mgr: Arc<event::EventManager>,
     buf_mgr: buffer::BufferManager::ver,
-    gpu: Option<Arc<dyn gpu::GpuManager>>,
 }
 
 #[versions(AGX)]
@@ -333,13 +332,7 @@ impl EventChannel::ver {
             ch: RxChannel::<ChannelState, RawEventMsg>::new(alloc, 0x100)?,
             ev_mgr,
             buf_mgr,
-            gpu: None,
         })
-    }
-
-    /// Registers the managing `Gpu` instance that will handle events on this channel.
-    pub(crate) fn set_manager(&mut self, gpu: Arc<dyn gpu::GpuManager>) {
-        self.gpu = Some(gpu);
     }
 
     /// Returns the raw `ChannelRing` structure to pass to firmware.
@@ -347,8 +340,8 @@ impl EventChannel::ver {
         self.ch.ring.to_raw()
     }
 
-    /// Polls for new Event messages on this ring.
-    pub(crate) fn poll(&mut self) {
+    /// Polls for new Event messages on this ring; `gpu` handles faults and timeouts.
+    pub(crate) fn poll(&mut self, gpu: &dyn gpu::GpuManager) {
         while let Some(msg) = self.ch.get(0) {
             // SAFETY: The raw view is always valid for all bit patterns.
             let tag = unsafe { msg.raw.0 };
@@ -360,28 +353,12 @@ impl EventChannel::ver {
 
                     cls_dev_dbg!(EventCh, self.dev, "Event: {:?}\n", msg);
                     match msg {
-                        EventMsg::Fault => match self.gpu.as_ref() {
-                            Some(gpu) => gpu.handle_fault(),
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
-                            }
-                        },
+                        EventMsg::Fault => gpu.handle_fault(),
                         EventMsg::Timeout {
                             counter,
                             unk_8,
                             event_slot,
-                        } => match self.gpu.as_ref() {
-                            Some(gpu) => gpu.handle_timeout(counter, event_slot, unk_8),
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
-                            }
-                        },
+                        } => gpu.handle_timeout(counter, event_slot, unk_8),
                         EventMsg::Flag { firing, .. } => {
                             for (i, flags) in firing.iter().enumerate() {
                                 for j in 0..32 {
@@ -395,25 +372,16 @@ impl EventChannel::ver {
                             vm_slot,
                             buffer_slot,
                             counter,
-                        } => match self.gpu.as_ref() {
-                            Some(gpu) => {
+                        } => {
                                 self.buf_mgr.grow(buffer_slot);
                                 gpu.ack_grow(buffer_slot, vm_slot, counter);
                             }
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
-                            }
-                        },
                         EventMsg::ChannelError {
                             error_type,
                             pipe_type,
                             event_slot,
                             event_value,
-                        } => match self.gpu.as_ref() {
-                            Some(gpu) => {
+                        } => {
                                 let error_type = match error_type {
                                     0 => ChannelErrorType::MemoryError,
                                     1 => ChannelErrorType::DMKill,
@@ -428,13 +396,6 @@ impl EventChannel::ver {
                                     event_value,
                                 );
                             }
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
-                            }
-                        },
                         msg => {
                             dev_crit!(self.dev.as_ref(), "Unknown event message: {:?}\n", msg);
                         }
