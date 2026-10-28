@@ -488,8 +488,7 @@ where
     D: DriverObject,
     R: Deref<Target = Object<D>>,
 {
-    /// FIXME: Should not be public!
-    pub addr: *mut c_void,
+    addr: *mut c_void,
     owner: R,
 }
 
@@ -508,6 +507,13 @@ where
     #[inline]
     pub fn owner(&self) -> &Object<D> {
         &self.owner
+    }
+
+    /// Returns the kernel virtual address of the mapping.
+    ///
+    /// The address covers the whole object and stays valid while `self` is alive.
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.addr
     }
 }
 

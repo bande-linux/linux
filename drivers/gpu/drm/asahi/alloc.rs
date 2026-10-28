@@ -536,7 +536,7 @@ impl Allocator for SimpleAllocator {
         );
 
         let mut obj = crate::gem::new_kernel_object(&self.dev, size_aligned)?;
-        let p = obj.vmap()?.addr as *mut u8;
+        let p = obj.vmap()?.as_ptr() as *mut u8;
         if debug_enabled(DebugFlags::FillAllocations) {
             let obj_size = obj.size();
             if let Ok(vmap) = obj.vmap() {
@@ -990,7 +990,7 @@ impl HeapAllocator {
             let (obj_start, obj_size, p) = self.mm.with_inner(|inner| -> Result<_> {
                 let idx = idx.unwrap_or(inner.backing_objects.len() - 1);
                 let obj = &mut inner.backing_objects[idx];
-                let p = obj.0.vmap()?.addr as *mut u8;
+                let p = obj.0.vmap()?.as_ptr() as *mut u8;
                 Ok((obj.2, obj.0.size(), p))
             })?;
             assert!(obj_start <= start);
