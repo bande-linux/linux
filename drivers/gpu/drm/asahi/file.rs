@@ -1066,8 +1066,8 @@ impl File {
         reader.read_all(&mut vec, GFP_KERNEL)?;
 
         let objects = file.inner().objects();
-        let ret = queue.lock().submit(
-            reg_data,
+        let ret = reg_data.gpu.submit(
+            &mut **queue.lock(),
             id,
             syncs,
             data.in_sync_count as usize,

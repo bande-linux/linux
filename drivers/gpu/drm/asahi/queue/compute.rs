@@ -37,7 +37,7 @@ impl super::QueueInner::ver {
     /// Submit work to a compute queue.
     pub(super) fn submit_compute(
         &self,
-        gpu: &gpu::GpuManager::ver,
+        gpu: &gpu::GpuManager::ver<'_>,
         job: &mut Job<super::QueueJob::ver>,
         cmdbuf: &uapi::drm_asahi_cmd_compute,
         attachments: &microseq::Attachments,

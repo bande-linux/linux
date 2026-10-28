@@ -23,6 +23,7 @@ use core::sync::atomic::{
 
 use kernel::{
     c_str,
+    dma_fence,
     drm::gem::shmem,
     error::code::*,
     io::{
@@ -53,6 +54,7 @@ use kernel::{
         Instant,
         Monotonic, //
     },
+    xarray, //
 };
 
 use crate::alloc::Allocator;
@@ -76,6 +78,7 @@ use crate::{
     buffer,
     channel,
     event,
+    file,
     fw,
     gem,
     hw,
@@ -212,11 +215,13 @@ impl Default for ID {
 
 /// A guard representing one active submission on the GPU. When dropped, decrements the active
 /// submission count.
-pub(crate) struct OpGuard(Arc<dyn GpuManagerPriv>);
+pub(crate) struct OpGuard(AsahiDevRef);
 
 impl Drop for OpGuard {
     fn drop(&mut self) {
-        self.0.end_op();
+        if let Some(guard) = self.0.registration_guard() {
+            guard.registration_data_with(|reg_data| reg_data.gpu.end_op());
+        }
     }
 }
 
@@ -236,10 +241,10 @@ pub(crate) struct SequenceIDs {
 /// Top-level GPU manager that owns all the global state relevant to the driver instance.
 #[versions(AGX)]
 #[pin_data]
-pub(crate) struct GpuManager {
+pub(crate) struct GpuManager<'drm> {
     // Declared first so it is dropped first: once the client is freed no callback can
     // reach the fields below through `ManagerPtr`.
-    rtkit: SetOnce<Pin<KBox<rtkit::RtKit<GpuManager::ver>>>>,
+    rtkit: SetOnce<Pin<KBox<rtkit::RtKit<GpuManager::ver<'drm>>>>>,
     dev: AsahiDevRef,
     cfg: &'static hw::HwConfig,
     dyncfg: hw::DynConfig,
@@ -263,14 +268,11 @@ pub(crate) struct GpuManager {
     #[allow(clippy::vec_box)]
     #[pin]
     garbage_contexts: Mutex<KVec<KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>>>,
+    res: regs::Resources<'drm>,
 }
 
 /// Trait used to abstract the firmware/GPU-dependent variants of the GpuManager.
 pub(crate) trait GpuManager: Send + Sync {
-    /// Cast as an Any type.
-    fn _as_any(&self) -> &dyn Any;
-    /// Cast Arc<Self> as an Any type.
-    fn arc_as_any(self: Arc<Self>) -> Arc<dyn Any + Sync + Send>;
     /// Initialize the GPU.
     fn init(&self) -> Result;
     /// Update the GPU globals from global info
@@ -334,12 +336,18 @@ pub(crate) trait GpuManager: Send + Sync {
         bo: gem::ObjectRef,
         range: Range<usize>,
     ) -> Result<mmu::KernelMapping>;
-}
-
-/// Private generic trait for functions that don't need to escape this module.
-trait GpuManagerPriv {
     /// Decrement the pending submission counter.
     fn end_op(&self);
+    fn submit(
+        &self,
+        queue: &mut dyn queue::Queue,
+        id: u64,
+        syncs: KVec<file::SyncItem>,
+        in_sync_count: usize,
+        cmdbuf_raw: &[u8],
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+    ) -> Result;
+    fn run_queue_job(&self, job: &mut dyn Any) -> Result<Option<dma_fence::Fence>>;
 }
 
 pub(crate) struct RtkitObject {
@@ -363,18 +371,18 @@ impl rtkit::Buffer for RtkitObject {
 /// Points to the pinned `GpuManager` whose `rtkit` field holds the client, so it is valid for
 /// as long as the client exists: the field is declared first and dropped first.
 #[versions(AGX)]
-pub(crate) struct ManagerPtr(NonNull<GpuManager::ver>);
+pub(crate) struct ManagerPtr<'drm>(NonNull<GpuManager::ver<'drm>>);
 
 // SAFETY: `GpuManager` is `Send + Sync`; the pointer is only turned into a shared reference.
 #[versions(AGX)]
-unsafe impl Send for ManagerPtr::ver {}
+unsafe impl Send for ManagerPtr::ver<'_> {}
 // SAFETY: See the `Send` impl.
 #[versions(AGX)]
-unsafe impl Sync for ManagerPtr::ver {}
+unsafe impl Sync for ManagerPtr::ver<'_> {}
 
 #[versions(AGX)]
-impl ManagerPtr::ver {
-    fn get(&self) -> &GpuManager::ver {
+impl<'drm> ManagerPtr::ver<'drm> {
+    fn get(&self) -> &GpuManager::ver<'drm> {
         // SAFETY: Valid per the type invariant.
         unsafe { self.0.as_ref() }
     }
@@ -382,8 +390,8 @@ impl ManagerPtr::ver {
 
 #[versions(AGX)]
 #[vtable]
-impl rtkit::Operations for GpuManager::ver {
-    type Data = ManagerPtr::ver;
+impl<'drm> rtkit::Operations for GpuManager::ver<'drm> {
+    type Data = ManagerPtr::ver<'drm>;
     type Buffer = RtkitObject;
 
     fn recv_message(rtk: &rtkit::RtKit<Self>, ep: u8, msg: u64) {
@@ -441,16 +449,16 @@ impl rtkit::Operations for GpuManager::ver {
 }
 
 #[versions(AGX)]
-impl GpuManager::ver {
+impl<'drm> GpuManager::ver<'drm> {
     /// Create a new GpuManager of this version/GPU combination.
     #[inline(never)]
     pub(crate) fn new(
         dev: &AsahiDrmDevice,
-        res: &regs::Resources<'_>,
+        res: regs::Resources<'drm>,
         cfg: &'static hw::HwConfig,
-    ) -> Result<Arc<GpuManager::ver>> {
+    ) -> Result<Arc<GpuManager::ver<'drm>>> {
         let uat = Self::make_uat(dev, cfg)?;
-        let dyncfg = Self::make_dyncfg(dev, res, cfg, &uat)?;
+        let dyncfg = Self::make_dyncfg(dev, &res, cfg, &uat)?;
 
         let mut alloc = KernelAllocators {
             private: alloc::DefaultAllocator::new(
@@ -528,7 +536,7 @@ impl GpuManager::ver {
                 false,
             )?);
 
-        let mut mgr = Self::make_mgr(dev, cfg, dyncfg, uat, alloc, event_manager, initdata)?;
+        let mut mgr = Self::make_mgr(dev, res, cfg, dyncfg, uat, alloc, event_manager, initdata)?;
 
         {
             let fwctl = mgr.fwctl_channel.lock();
@@ -632,7 +640,7 @@ impl GpuManager::ver {
         let mgr = Arc::from(mgr);
 
         let rtkit = KBox::pin_init(
-            rtkit::RtKit::<GpuManager::ver>::new(
+            rtkit::RtKit::<GpuManager::ver<'drm>>::new(
                 dev.as_ref().as_ref(),
                 None,
                 0,
@@ -646,8 +654,11 @@ impl GpuManager::ver {
     }
 
     /// Returns the RTKit client of the GPU coprocessor.
-    fn rtkit(&self) -> Result<&rtkit::RtKit<GpuManager::ver>> {
-        self.rtkit.as_ref().map(|r| r.as_ref().get_ref()).ok_or(ENODEV)
+    fn rtkit(&self) -> Result<&rtkit::RtKit<GpuManager::ver<'drm>>> {
+        self.rtkit
+            .as_ref()
+            .map(|r| r.as_ref().get_ref())
+            .ok_or(ENODEV)
     }
 
     /// Return a mutable reference to the initdata member
@@ -714,13 +725,14 @@ impl GpuManager::ver {
     #[inline(never)]
     fn make_mgr(
         dev: &AsahiDrmDevice,
+        res: regs::Resources<'drm>,
         cfg: &'static hw::HwConfig,
         dyncfg: KBox<hw::DynConfig>,
         uat: KBox<mmu::Uat>,
         mut alloc: KernelAllocators,
         event_manager: Arc<event::EventManager>,
         initdata: KBox<fw::types::GpuObject<fw::initdata::InitData::ver>>,
-    ) -> Result<Pin<UniqueArc<GpuManager::ver>>> {
+    ) -> Result<Pin<UniqueArc<GpuManager::ver<'drm>>>> {
         let mut pipes = PipeChannels::ver {
             vtx: KVec::new(),
             frag: KVec::new(),
@@ -792,6 +804,7 @@ impl GpuManager::ver {
         let x = UniqueArc::pin_init(
             try_pin_init!(GpuManager::ver {
                 dev: dev.into(),
+                res,
                 cfg,
                 dyncfg: KBox::<hw::DynConfig>::into_inner(dyncfg),
                 initdata: KBox::<fw::types::GpuObject<fw::initdata::InitData::ver>>::into_inner(initdata),
@@ -978,7 +991,7 @@ impl GpuManager::ver {
     /// Create a new MMIO mapping and add it to the mappings list in initdata at the specified
     /// index.
     fn iomap(
-        this: &mut Pin<UniqueArc<GpuManager::ver>>,
+        this: &mut Pin<UniqueArc<GpuManager::ver<'drm>>>,
         cfg: &'static hw::HwConfig,
         index: usize,
         map: &hw::IOMapping,
@@ -1081,24 +1094,15 @@ impl GpuManager::ver {
 
     /// Fetch the GPU MMU fault information from the hardware registers.
     fn get_fault_info(&self) -> Option<regs::FaultInfo> {
-        // TODO: handle differently
-        let Some(guard) = self.dev.registration_guard() else {
-            return None;
-        };
-
-        guard.registration_data_with(|reg_data| {
-            let res = &reg_data.resources;
-
-            let info = res.get_fault_info(self.cfg);
-            if info.is_some() {
-                dev_err!(
-                    self.dev.as_ref(),
-                    "  Fault info: {:#x?}\n",
-                    info.as_ref().unwrap()
-                );
-            }
-            info
-        })
+        let info = self.res.get_fault_info(self.cfg);
+        if info.is_some() {
+            dev_err!(
+                self.dev.as_ref(),
+                "  Fault info: {:#x?}\n",
+                info.as_ref().unwrap()
+            );
+        }
+        info
     }
 
     /// Resume the GPU firmware after it halts (due to a timeout, fault, or request).
@@ -1173,7 +1177,7 @@ impl GpuManager::ver {
         Ok(())
     }
 
-    pub(crate) fn start_op(self: &Arc<GpuManager::ver>) -> Result<OpGuard> {
+    pub(crate) fn start_op(&self) -> Result<OpGuard> {
         if self.is_crashed() {
             return Err(ENODEV);
         }
@@ -1185,7 +1189,7 @@ impl GpuManager::ver {
 
         mod_dev_dbg!(self.dev, "OP start (pending: {})\n", val + 1);
         self.kick_firmware()?;
-        Ok(OpGuard(self.clone()))
+        Ok(OpGuard(self.dev.clone()))
     }
 
     fn invalidate_context(
@@ -1254,13 +1258,36 @@ impl GpuManager::ver {
 }
 
 #[versions(AGX)]
-impl GpuManager for GpuManager::ver {
-    fn _as_any(&self) -> &dyn Any {
-        self
+impl GpuManager for GpuManager::ver<'_> {
+    fn submit(
+        &self,
+        queue: &mut dyn queue::Queue,
+        id: u64,
+        syncs: KVec<file::SyncItem>,
+        in_sync_count: usize,
+        cmdbuf_raw: &[u8],
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+    ) -> Result {
+        queue
+            .as_any_mut()
+            .downcast_mut::<queue::Queue::ver>()
+            .ok_or(EIO)?
+            .submit(self, id, syncs, in_sync_count, cmdbuf_raw, objects)
     }
 
-    fn arc_as_any(self: Arc<Self>) -> Arc<dyn Any + Sync + Send> {
-        self as Arc<dyn Any + Sync + Send>
+    fn run_queue_job(&self, job: &mut dyn Any) -> Result<Option<dma_fence::Fence>> {
+        job.downcast_mut::<queue::QueueJob::ver>()
+            .ok_or(EIO)?
+            .run_on(self)
+    }
+
+    fn end_op(&self) {
+        let val = self
+            .initdata
+            .globals
+            .with(|raw, _inner| raw.pending_submissions.fetch_sub(1, Ordering::Release));
+
+        mod_dev_dbg!(self.dev, "OP end (pending: {})\n", val - 1);
     }
 
     fn init(&self) -> Result {
@@ -1637,17 +1664,5 @@ impl GpuManager for GpuManager::ver {
             mmu::PROT_FW_SHARED_RW,
             false,
         )
-    }
-}
-
-#[versions(AGX)]
-impl GpuManagerPriv for GpuManager::ver {
-    fn end_op(&self) {
-        let val = self
-            .initdata
-            .globals
-            .with(|raw, _inner| raw.pending_submissions.fetch_sub(1, Ordering::Release));
-
-        mod_dev_dbg!(self.dev, "OP end (pending: {})\n", val - 1);
     }
 }
