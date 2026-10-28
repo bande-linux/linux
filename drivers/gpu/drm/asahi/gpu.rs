@@ -1530,9 +1530,9 @@ impl GpuManager for GpuManager::ver {
 
         let token = txch.device_control.send(&dc);
         {
-            let rtk = self.rtkit()?;
-            if rtk
-                .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
+            if self
+                .rtkit()
+                .and_then(|rtk| rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL))
                 .is_err()
             {
                 dev_err!(
@@ -1576,9 +1576,9 @@ impl GpuManager for GpuManager::ver {
 
         txch.device_control.send(&dc);
         {
-            let rtk = self.rtkit()?;
-            if rtk
-                .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
+            if self
+                .rtkit()
+                .and_then(|rtk| rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL))
                 .is_err()
             {
                 dev_err!(self.dev.as_ref(), "Failed to send TVB Grow Ack command\n");
