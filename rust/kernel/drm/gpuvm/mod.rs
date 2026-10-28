@@ -17,7 +17,10 @@ use kernel::{
     },
     bindings,
     drm,
-    drm::gem::IntoGEMObject,
+    drm::gem::{
+        BaseObject,
+        IntoGEMObject, //
+    },
     error::to_result,
     prelude::*,
     sync::aref::{
@@ -53,6 +56,7 @@ pub use self::vm_bo::*;
 
 mod va;
 pub use self::va::*;
+
 
 /// A DRM GPU VA manager.
 ///
@@ -113,6 +117,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
             sm_step_map: Some(Self::sm_step_map),
             sm_step_unmap: Some(Self::sm_step_unmap),
             sm_step_remap: Some(Self::sm_step_remap),
+            sm_can_merge_flags: None,
         }
     }
 
@@ -232,6 +237,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
         unsafe { bindings::drm_gpuvm_is_extobj(self.as_raw(), obj.as_raw()) }
     }
 
+
     /// Free this GPUVM.
     ///
     /// # Safety
@@ -296,6 +302,7 @@ pub trait DriverGpuVm: Sized + Send + Sync {
     ) -> Result<OpRemapped<'op, Self>, Error>;
 }
 
+
 /// The core of the DRM GPU VA manager.
 ///
 /// This object is a unique reference to the VM that can access the interval tree and the Rust
@@ -321,6 +328,26 @@ impl<T: DriverGpuVm> UniqueRefGpuVm<T> {
     pub fn data(&mut self) -> &mut T {
         // SAFETY: By the type invariants we may access `data`.
         unsafe { &mut *self.0.data.get() }
+    }
+
+    /// Get the [`GpuVmBo`] for this gem object if it exists.
+    pub fn find_bo(&mut self, obj: &T::Object) -> Option<ARef<GpuVmBo<T>>> {
+        obj.lock_gpuva();
+        // SAFETY: drm_gem_object.gpuva.lock was just locked.
+        let ptr = unsafe {
+            bindings::drm_gpuvm_bo_find(self.as_raw() as *mut _, obj.as_raw() as *const _ as *mut _)
+        };
+        obj.unlock_gpuva();
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: we just checked that ptr is non-null
+            let nonnull = unsafe { NonNull::new_unchecked(ptr.cast()) };
+
+            // INVARIANTS: `drm_gpuvm_bo_find` only returns a vm_bo that is in the GEM's list.
+            // SAFETY: `drm_gpuvm_bo_find` returns a new reference to the vm_bo.
+            Some(unsafe { ARef::<GpuVmBo<T>>::from_raw(nonnull) })
+        }
     }
 }
 
