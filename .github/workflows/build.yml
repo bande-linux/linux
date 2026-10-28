@@ -19,6 +19,9 @@ jobs:
       MAKEFLAGS: -j8
       KBUILD_BUILD_USER: unbound
       KBUILD_BUILD_HOST: ci
+      CCACHE_DIR: /cache/ccache
+      CCACHE_MAXSIZE: 20G
+      CCACHE_BASEDIR: ${{ github.workspace }}
 
     steps:
       - uses: actions/checkout@v7
@@ -26,6 +29,15 @@ jobs:
           repository: unbound-linux/linux
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 1
+
+      - name: Set up ccache
+        run: |
+          command -v ccache >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends ccache >/dev/null
+          }
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          ccache -z
 
       - name: Configure
         run: |
@@ -45,6 +57,20 @@ jobs:
           start=$SECONDS
           make LOCALVERSION= Image modules apple/t8112-j473.dtb
           echo "build took $((SECONDS - start)) s"
+          echo "BUILD_SECONDS=$((SECONDS - start))" >> "$GITHUB_ENV"
+
+      - name: ccache summary
+        if: always()
+        run: |
+          ccache --print-stats | awk -v runner="$RUNNER_NAME" -v secs="${BUILD_SECONDS:-?}" '
+            { s[$1] = $2 }
+            END {
+              hit = s["direct_cache_hit"] + s["preprocessed_cache_hit"]
+              total = hit + s["cache_miss"]
+              printf "### ccache\n\n%s: %d of %d compilations from cache (%.1f%%), build %s s\n\n",
+                runner, hit, total, total ? 100 * hit / total : 0, secs
+            }' >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; ccache -s; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package
         run: |
