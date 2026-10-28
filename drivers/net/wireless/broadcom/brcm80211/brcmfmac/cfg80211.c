@@ -2854,6 +2854,8 @@ static void brcmf_fill_bss_param(struct brcmf_if *ifp, struct station_info *si)
 		bphy_err(drvr, "Failed to get bss info (%d)\n", err);
 		goto out_kfree;
 	}
+	if (brcmf_bss_info_check(drvr, &buf->bss_le, WL_BSS_INFO_MAX - 4))
+		goto out_kfree;
 	si->filled |= BIT_ULL(NL80211_STA_INFO_BSS_PARAM);
 	si->bss_param.beacon_interval = le16_to_cpu(buf->bss_le.beacon_period);
 	si->bss_param.dtim_period = buf->bss_le.dtim_period;
@@ -3217,6 +3219,37 @@ done:
 	return err;
 }
 
+int brcmf_bss_info_check(struct brcmf_pub *drvr,
+			 const struct brcmf_bss_info_le *bi, size_t buflen)
+{
+	u32 version = le32_to_cpu(bi->version);
+	u32 length = le32_to_cpu(bi->length);
+	u32 ie_offset = le16_to_cpu(bi->ie_offset);
+	u32 ie_length = le32_to_cpu(bi->ie_length);
+	size_t fixed;
+
+	switch (version) {
+	case BRCMF_BSS_INFO_VER_109:
+		fixed = sizeof(struct brcmf_bss_info_v109_le);
+		break;
+	case BRCMF_BSS_INFO_VER_112:
+		fixed = sizeof(struct brcmf_bss_info_v112_le);
+		break;
+	default:
+		bphy_err(drvr, "BSS info version %u unsupported\n", version);
+		return -EOPNOTSUPP;
+	}
+
+	if (length > buflen || length < fixed || ie_offset < fixed ||
+	    ie_length > length - ie_offset) {
+		bphy_err(drvr, "invalid BSS info v%u: length %u, IEs %u+%u\n",
+			 version, length, ie_offset, ie_length);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 				   struct brcmf_bss_info_le *bi)
 {
@@ -3314,20 +3347,12 @@ next_bss_le(struct brcmf_scan_results *list, struct brcmf_bss_info_le *bss)
 
 static s32 brcmf_inform_bss(struct brcmf_cfg80211_info *cfg)
 {
-	struct brcmf_pub *drvr = cfg->pub;
 	struct brcmf_scan_results *bss_list;
 	struct brcmf_bss_info_le *bi = NULL;	/* must be initialized */
 	s32 err = 0;
 	int i;
 
 	bss_list = (struct brcmf_scan_results *)cfg->escan_info.escan_buf;
-	if (bss_list->count != 0 &&
-	    (bss_list->version < BRCMF_BSS_INFO_MIN_VERSION ||
-	    bss_list->version > BRCMF_BSS_INFO_MAX_VERSION)) {
-		bphy_err(drvr, "BSS info version %d unsupported\n",
-			 bss_list->version);
-		return -EOPNOTSUPP;
-	}
 	brcmf_dbg(SCAN, "scanned AP count (%d)\n", bss_list->count);
 	for (i = 0; i < bss_list->count; i++) {
 		bi = next_bss_le(bss_list, bi);
@@ -3375,6 +3400,9 @@ static s32 brcmf_inform_ibss(struct brcmf_cfg80211_info *cfg,
 	}
 
 	bi = (struct brcmf_bss_info_le *)(buf + 4);
+	err = brcmf_bss_info_check(drvr, bi, WL_BSS_INFO_MAX - 4);
+	if (err)
+		goto cleanup;
 
 	ch.chspec = le16_to_cpu(bi->chanspec);
 	cfg->d11inf.decchspec(&ch);
@@ -3448,7 +3476,9 @@ static s32 brcmf_update_bss_info(struct brcmf_cfg80211_info *cfg,
 		goto update_bss_info_out;
 	}
 	bi = (struct brcmf_bss_info_le *)(cfg->extra_buf + 4);
-	err = brcmf_inform_single_bss(cfg, bi);
+	err = brcmf_bss_info_check(drvr, bi, WL_EXTRA_BUF_MAX - 4);
+	if (!err)
+		err = brcmf_inform_single_bss(cfg, bi);
 
 update_bss_info_out:
 	brcmf_dbg(TRACE, "Exit");
@@ -3581,6 +3611,9 @@ brcmf_cfg80211_escan_handler(struct brcmf_if *ifp,
 			goto exit;
 		}
 		bss_info_le = &escan_result_le->bss_info_le;
+		if (brcmf_bss_info_check(drvr, bss_info_le,
+					 escan_buflen - WL_ESCAN_RESULTS_FIXED_SIZE))
+			goto exit;
 
 		if (brcmf_p2p_scan_finding_common_channel(cfg, bss_info_le))
 			goto exit;
@@ -6407,6 +6440,9 @@ brcmf_bss_roaming_done(struct brcmf_cfg80211_info *cfg,
 		goto done;
 
 	bi = (struct brcmf_bss_info_le *)(buf + 4);
+	err = brcmf_bss_info_check(ifp->drvr, bi, WL_BSS_INFO_MAX - 4);
+	if (err)
+		goto done;
 	ch.chspec = le16_to_cpu(bi->chanspec);
 	cfg->d11inf.decchspec(&ch);
 

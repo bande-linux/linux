@@ -7,6 +7,7 @@
 #ifndef FWIL_TYPES_H_
 #define FWIL_TYPES_H_
 
+#include <linux/build_bug.h>
 #include <linux/if_ether.h>
 
 
@@ -18,9 +19,8 @@
 #define BRCMF_ARP_OL_HOST_AUTO_REPLY	0x00000004
 #define BRCMF_ARP_OL_PEER_AUTO_REPLY	0x00000008
 
-#define	BRCMF_BSS_INFO_MIN_VERSION	109 /* min ver of brcmf_bss_info_le struct */
-/* BCM4388 firmware 23.10.1039.0.41.51.239 reports v116, keeping the v112 layout */
-#define	BRCMF_BSS_INFO_MAX_VERSION	116 /* max ver of brcmf_bss_info_le struct */
+#define BRCMF_BSS_INFO_VER_109		109
+#define BRCMF_BSS_INFO_VER_112		112
 #define BRCMF_BSS_RSSI_ON_CHANNEL	0x0004
 
 #define BRCMF_STA_BRCM			0x00000001	/* Running a Broadcom driver */
@@ -320,6 +320,9 @@ struct brcmf_pkt_filter_enable_le {
 /* BSS info structure
  * Applications MUST CHECK ie_offset field and length field to access IEs and
  * next bss_info structure in a vector (in struct brcmf_scan_results)
+ *
+ * The fields every supported version has at the same offset with the same
+ * meaning; struct brcmf_bss_info_v*_le describe the complete records.
  */
 struct brcmf_bss_info_le {
 	__le32 version;		/* version field */
@@ -342,48 +345,50 @@ struct brcmf_bss_info_le {
 	u8 accessnet;		/* from beacon interwork IE (if bcnflags) */
 	__le16 RSSI;		/* receive signal strength (in dBm) */
 	s8 phy_noise;		/* noise (in dBm) */
-
 	u8 n_cap;		/* BSS is 802.11N Capable */
-	u8 he_cap;		/* BSS is he capable */
+	u8 reserved0;
 	u8 load;		/* BSS Load from QBSS load IE if available */
 	/* 802.11N BSS Capabilities (based on HT_CAP_*): */
 	__le32 nbss_cap;
 	u8 ctl_ch;		/* 802.11N BSS control channel number */
-	u8 reserved1[3];	/* Reserved for expansion of BSS properties */
+	u8 reserved1[3];
 	__le16 vht_rxmcsmap;	/* VHT rx mcs map (802.11ac IE, VHT_CAP_MCS_MAP_*) */
 	__le16 vht_txmcsmap;	/* VHT tx mcs map (802.11ac IE, VHT_CAP_MCS_MAP_*) */
 	u8 flags;		/* flags */
 	u8 vht_cap;		/* BSS is vht capable */
-	u8 reserved2[2];	/* Reserved for expansion of BSS properties */
+	u8 flags2;		/* extended flags */
+	u8 reserved2;
 	u8 basic_mcs[BRCMF_MCSSET_LEN];	/* 802.11N BSS required MCS set */
-
 	__le16 ie_offset;	/* offset at which IEs start, from beginning */
-	u8 reserved3[2];	/* Reserved for expansion of BSS properties */
+	u8 reserved3[2];
 	__le32 ie_length;	/* byte length of Information Elements */
 	__le16 SNR;		/* average SNR of during frame reception */
-	__le16		vht_mcsmap;		/**< STA's Associated vhtmcsmap */
-	__le16		vht_mcsmap_prop;	/**< STA's Associated prop vhtmcsmap */
-	__le16		vht_txmcsmap_prop;	/**< prop VHT tx mcs prop */
-	__le32		he_mcsmap;	/**< STA's Associated hemcsmap */
-	__le32		he_rxmcsmap;	/**< HE rx mcs map (802.11ax IE, HE_CAP_MCS_MAP_*) */
-	__le32		he_txmcsmap;	/**< HE tx mcs map (802.11ax IE, HE_CAP_MCS_MAP_*) */
-	__le32		timestamp[2];  /* Beacon Timestamp for FAKEAP req */
-	/* V112 fields follow */
-	u8		eht_cap;		/* BSS is EHT capable */
-	u8		reserved4[3];	/* Reserved for expansion of BSS properties */
-	/* by the spec. it is maximum 16 streams hence all mcs code for all nss may not fit
-	 * in a 32 bit mcs nss map but since this field only reflects the common mcs nss map
-	 * between that of the peer and our device so it's probably ok to make it 32 bit and
-	 * allow only a limited number of nss e.g. upto 8 of them in the map given the fact
-	 * that our device probably won't exceed 4 streams anyway...
-	 */
-	__le32		eht_mcsmap;		/* STA's associated EHT mcs code map */
-	/* FIXME: change the following mcs code map to uint32 if all mcs+nss can fit in */
-	u8		eht_rxmcsmap[6];	/* EHT rx mcs code map */
-	u8		eht_txmcsmap[6];	/* EHT tx mcs code map */
-	/* Add new fields here */
-	/* variable length Information Elements */
+} __packed;
+
+/* Layouts from the Broadcom wlioctl.h shipped in Android's bcmdhd drivers */
+struct brcmf_bss_info_v109_le {
+	struct brcmf_bss_info_le info;
+	__le16 vht_mcsmap;	/* STA's associated VHT MCS map */
+	__le16 vht_mcsmap_prop;	/* STA's associated proprietary VHT MCS map */
+	__le16 vht_txmcsmap_prop;	/* proprietary VHT tx MCS map */
 };
+
+struct brcmf_bss_info_v112_le {
+	struct brcmf_bss_info_le info;
+	__le16 vht_mcsmap;	/* STA's associated VHT MCS map */
+	__le16 vht_mcsmap_prop;	/* STA's associated proprietary VHT MCS map */
+	__le16 vht_txmcsmap_prop;	/* proprietary VHT tx MCS map */
+	__le32 he_mcsmap;	/* STA's associated HE MCS map */
+	__le32 he_rxmcsmap;	/* HE rx MCS map (802.11ax IE, HE_CAP_MCS_MAP_*) */
+	__le32 he_txmcsmap;	/* HE tx MCS map (802.11ax IE, HE_CAP_MCS_MAP_*) */
+	__le32 timestamp[2];	/* beacon timestamp */
+	u8 pad[20];
+};
+
+static_assert(offsetof(struct brcmf_bss_info_le, ie_offset) == 116);
+static_assert(sizeof(struct brcmf_bss_info_le) == 126);
+static_assert(sizeof(struct brcmf_bss_info_v109_le) == 132);
+static_assert(sizeof(struct brcmf_bss_info_v112_le) == 172);
 
 struct brcm_rateset_le {
 	/* # rates in this set */
@@ -584,8 +589,7 @@ struct brcmf_escan_result_le {
 	struct brcmf_bss_info_le bss_info_le;
 };
 
-#define WL_ESCAN_RESULTS_FIXED_SIZE (sizeof(struct brcmf_escan_result_le) - \
-	sizeof(struct brcmf_bss_info_le))
+#define WL_ESCAN_RESULTS_FIXED_SIZE offsetof(struct brcmf_escan_result_le, bss_info_le)
 
 /* used for association with a specific BSSID and chanspec list */
 struct brcmf_assoc_params_le {

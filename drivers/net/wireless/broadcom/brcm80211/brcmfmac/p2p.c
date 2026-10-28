@@ -2045,9 +2045,12 @@ static void brcmf_p2p_get_current_chanspec(struct brcmf_p2p_info *p2p,
 			if (brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_BSS_INFO,
 						   buf, WL_BSS_INFO_MAX) == 0) {
 				bi = (struct brcmf_bss_info_le *)(buf + 4);
-				*chanspec = le16_to_cpu(bi->chanspec);
-				kfree(buf);
-				return;
+				if (!brcmf_bss_info_check(ifp->drvr, bi,
+							  WL_BSS_INFO_MAX - 4)) {
+					*chanspec = le16_to_cpu(bi->chanspec);
+					kfree(buf);
+					return;
+				}
 			}
 			kfree(buf);
 		}

@@ -510,6 +510,8 @@ void brcmf_cfg80211_arm_vif_event(struct brcmf_cfg80211_info *cfg,
 bool brcmf_cfg80211_vif_event_armed(struct brcmf_cfg80211_info *cfg);
 int brcmf_cfg80211_wait_vif_event(struct brcmf_cfg80211_info *cfg,
 				  u8 action, ulong timeout);
+int brcmf_bss_info_check(struct brcmf_pub *drvr,
+			 const struct brcmf_bss_info_le *bi, size_t buflen);
 s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 				struct brcmf_if *ifp, bool aborted,
 				bool fw_abort);
