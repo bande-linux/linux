@@ -303,6 +303,7 @@ static int mca_fe_enable_clocks(struct mca_cluster *cl)
 	 * the power state driver would error out on seeing the device
 	 * as clock-gated.
 	 */
+	WARN_ON(cl->pd_link);
 	cl->pd_link = device_link_add(mca->dev, cl->pd_dev,
 				      DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
 					      DL_FLAG_RPM_ACTIVE);
@@ -326,7 +327,11 @@ static void mca_fe_disable_clocks(struct mca_cluster *cl)
 	mca_modify(cl, REG_SYNCGEN_STATUS, SYNCGEN_STATUS_EN, 0);
 	mca_modify(cl, REG_STATUS, STATUS_MCLK_EN, 0);
 
-	device_link_del(cl->pd_link);
+	if (cl->pd_link) {
+		device_link_del(cl->pd_link);
+		cl->pd_link = NULL;
+	}
+
 	clk_disable_unprepare(cl->clk_parent);
 }
 
@@ -352,33 +357,6 @@ static bool mca_fe_clocks_in_use(struct mca_cluster *cl)
 	return false;
 }
 
-static int mca_be_hw_free(struct snd_pcm_substream *substream,
-			  struct snd_soc_dai *dai)
-{
-	struct mca_cluster *cl = mca_dai_to_cluster(dai);
-	struct mca_data *mca = cl->host;
-	struct mca_cluster *fe_cl;
-
-	if (cl->port_clk_driver < 0)
-		return -EINVAL;
-
-	/*
-	 * We are operating on a foreign cluster here, but since we
-	 * belong to the same PCM, accesses should have been
-	 * synchronized at ASoC level.
-	 */
-	fe_cl = &mca->clusters[cl->port_clk_driver];
-	if (!mca_fe_clocks_in_use(fe_cl))
-		return 0; /* Nothing to do */
-
-	cl->clocks_in_use[substream->stream] = false;
-
-	if (!mca_fe_clocks_in_use(fe_cl))
-		mca_fe_disable_clocks(fe_cl);
-
-	return 0;
-}
-
 static int mca_fe_prepare(struct snd_pcm_substream *substream,
 			  struct snd_soc_dai *dai)
 {
@@ -392,6 +370,7 @@ static int mca_fe_prepare(struct snd_pcm_substream *substream,
 	if (!cl->syncgen_in_use) {
 		int port = ffs(mca_fe_get_portmask(substream));
 
+		WARN_ON(cl->pd_link);
 		cl->pd_link = device_link_add(mca->dev, cl->pd_dev,
 					      DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
 						DL_FLAG_RPM_ACTIVE);
@@ -423,8 +402,10 @@ static int mca_fe_hw_free(struct snd_pcm_substream *substream,
 		return 0;
 
 	mca_modify(cl, REG_SYNCGEN_STATUS, SYNCGEN_STATUS_EN, 0);
-	if (cl->pd_link)
+	if (cl->pd_link) {
 		device_link_del(cl->pd_link);
+		cl->pd_link = NULL;
+	}
 
 	return 0;
 }
@@ -894,6 +875,26 @@ static void mca_be_shutdown(struct snd_pcm_substream *substream,
 	struct mca_cluster *fe_cl;
 	struct mca_data *mca = cl->host;
 
+	if (cl->clocks_in_use[substream->stream] &&
+		!WARN_ON(cl->port_clk_driver < 0)) {
+		struct mca_cluster *fe_cl = &mca->clusters[cl->port_clk_driver];
+
+		/*
+		 * Typically the CODECs we are paired with will require clocks
+		 * to be present at time of mute with the 'mute_stream' op.
+		 * We need to disable the clocks here at the earliest (hw_free
+		 * would be too early).
+		 *
+		 * We are operating on a foreign cluster here, but since we
+		 * belong to the same PCM, accesses should have been
+		 * synchronized at ASoC level.
+		 */
+		cl->clocks_in_use[substream->stream] = false;
+
+		if (!mca_fe_clocks_in_use(fe_cl))
+			mca_fe_disable_clocks(fe_cl);
+	}
+
 	if (!fe)
 		return;
 	fe_cl = mca_dai_to_cluster(snd_soc_rtd_to_cpu(fe, 0));
@@ -921,7 +922,6 @@ static void mca_be_shutdown(struct snd_pcm_substream *substream,
 
 static const struct snd_soc_dai_ops mca_be_ops = {
 	.prepare = mca_be_prepare,
-	.hw_free = mca_be_hw_free,
 	.startup = mca_be_startup,
 	.shutdown = mca_be_shutdown,
 };
@@ -1145,8 +1145,10 @@ static void apple_mca_release(struct mca_data *mca)
 			dev_pm_domain_detach(cl->pd_dev, true);
 	}
 
-	if (mca->pd_link)
+	if (mca->pd_link) {
 		device_link_del(mca->pd_link);
+		mca->pd_link = NULL;
+	}
 
 	if (!IS_ERR_OR_NULL(mca->pd_dev))
 		dev_pm_domain_detach(mca->pd_dev, true);
