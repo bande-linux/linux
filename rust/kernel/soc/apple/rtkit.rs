@@ -20,13 +20,9 @@ use crate::{
     },
     prelude::*,
     str::CStrExt,
-    types::{
-        ForeignOwnable,
-        ScopeGuard, //
-    }, //
 };
 
-use core::marker::PhantomData;
+use core::marker::PhantomPinned;
 use core::ptr;
 use macros::vtable;
 
@@ -53,19 +49,19 @@ pub trait Buffer {
 
 /// Callback operations for an RTKit client.
 #[vtable]
-pub trait Operations {
+pub trait Operations: Sized {
     /// Arbitrary user context type.
-    type Data: ForeignOwnable + Send + Sync;
+    type Data: Send + Sync;
 
     /// Type representing an allocated buffer for RTKit.
     type Buffer: Buffer;
 
     /// Called when RTKit crashes.
-    fn crashed(_data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _crashlog: Option<&[u8]>) {}
+    fn crashed(_rtk: &RtKit<Self>, _crashlog: Option<&[u8]>) {}
 
     /// Called when a message was received on a non-system endpoint. Called in non-IRQ context.
     fn recv_message(
-        _data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        _rtk: &RtKit<Self>,
         _endpoint: u8,
         _message: u64,
     ) {
@@ -76,7 +72,7 @@ pub trait Operations {
     /// Must return `true` if the message is handled, or `false` to process it in
     /// the handling thread.
     fn recv_message_early(
-        _data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        _rtk: &RtKit<Self>,
         _endpoint: u8,
         _message: u64,
     ) -> bool {
@@ -85,7 +81,7 @@ pub trait Operations {
 
     /// Allocate a buffer for use by RTKit.
     fn shmem_alloc(
-        _data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        _rtk: &RtKit<Self>,
         _size: usize,
     ) -> Result<Self::Buffer> {
         Err(EINVAL)
@@ -93,7 +89,7 @@ pub trait Operations {
 
     /// Map an existing buffer used by RTKit at a device-specified virtual address.
     fn shmem_map(
-        _data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        _rtk: &RtKit<Self>,
         _iova: usize,
         _size: usize,
     ) -> Result<Self::Buffer> {
@@ -107,10 +103,13 @@ pub trait Operations {
 ///
 /// The rtk pointer is valid.
 /// The data pointer is a valid pointer from T::Data::into_foreign().
+#[pin_data(PinnedDrop)]
 pub struct RtKit<T: Operations> {
     rtk: *mut bindings::apple_rtkit,
-    data: *mut core::ffi::c_void,
-    _p: PhantomData<T>,
+    #[pin]
+    data: T::Data,
+    #[pin]
+    _pin: PhantomPinned,
 }
 
 unsafe extern "C" fn crashed_callback<T: Operations>(
@@ -124,8 +123,8 @@ unsafe extern "C" fn crashed_callback<T: Operations>(
     } else {
         None
     };
-    // SAFETY: cookie is always a T::Data in this API
-    T::crashed(unsafe { T::Data::borrow(cookie.cast()) }, crashlog);
+    // SAFETY: The cookie is the pinned `RtKit<T>` that registered this callback.
+    T::crashed(unsafe { &*cookie.cast::<RtKit<T>>() }, crashlog);
 }
 
 unsafe extern "C" fn recv_message_callback<T: Operations>(
@@ -133,8 +132,8 @@ unsafe extern "C" fn recv_message_callback<T: Operations>(
     endpoint: u8,
     message: u64,
 ) {
-    // SAFETY: cookie is always a T::Data in this API
-    T::recv_message(unsafe { T::Data::borrow(cookie.cast()) }, endpoint, message);
+    // SAFETY: The cookie is the pinned `RtKit<T>` that registered this callback.
+    T::recv_message(unsafe { &*cookie.cast::<RtKit<T>>() }, endpoint, message);
 }
 
 unsafe extern "C" fn recv_message_early_callback<T: Operations>(
@@ -142,8 +141,8 @@ unsafe extern "C" fn recv_message_early_callback<T: Operations>(
     endpoint: u8,
     message: u64,
 ) -> bool {
-    // SAFETY: cookie is always a T::Data in this API
-    T::recv_message_early(unsafe { T::Data::borrow(cookie.cast()) }, endpoint, message)
+    // SAFETY: The cookie is the pinned `RtKit<T>` that registered this callback.
+    T::recv_message_early(unsafe { &*cookie.cast::<RtKit<T>>() }, endpoint, message)
 }
 
 unsafe extern "C" fn shmem_setup_callback<T: Operations>(
@@ -157,15 +156,15 @@ unsafe extern "C" fn shmem_setup_callback<T: Operations>(
         let mut buf = if bfr_mut.iova != 0 {
             bfr_mut.is_mapped = true;
             T::shmem_map(
-                // SAFETY: `cookie` came from a previous call to `into_foreign`.
-                unsafe { T::Data::borrow(cookie.cast()) },
+                // SAFETY: The cookie is the pinned `RtKit<T>` that registered this callback.
+                unsafe { &*cookie.cast::<RtKit<T>>() },
                 bfr_mut.iova as usize,
                 bfr_mut.size,
             )?
         } else {
             bfr_mut.is_mapped = false;
-            // SAFETY: `cookie` came from a previous call to `into_foreign`.
-            T::shmem_alloc(unsafe { T::Data::borrow(cookie.cast()) }, bfr_mut.size)?
+            // SAFETY: The cookie is the pinned `RtKit<T>` that registered this callback.
+            T::shmem_alloc(unsafe { &*cookie.cast::<RtKit<T>>() }, bfr_mut.size)?
         };
 
         let iova = buf.iova()?;
@@ -221,61 +220,66 @@ impl<T: Operations> RtKit<T> {
     };
 
     /// Creates a new RTKit client for a given device and optional mailbox name or index.
-    pub fn new(
-        dev: &device::Device,
+    ///
+    /// The client owns `data`; the callbacks of `T` receive the client and reach `data`
+    /// through [`RtKit::data`].
+    pub fn new<'a>(
+        dev: &'a device::Device,
         mbox_name: Option<&'static CStr>,
         mbox_idx: usize,
-        data: T::Data,
-    ) -> Result<Self> {
-        let ptr: *mut crate::ffi::c_void = data.into_foreign().cast();
-        let guard = ScopeGuard::new(|| {
-            // SAFETY: `ptr` came from a previous call to `into_foreign`.
-            unsafe { T::Data::from_foreign(ptr.cast()) };
-        });
-        // SAFETY: `dev` is valid by its type invarants and otherwise his just
-        //          calls the C init function.
-        let rtk = unsafe {
-            from_err_ptr(bindings::apple_rtkit_init(
-                dev.as_raw(),
-                ptr,
-                match mbox_name {
-                    Some(s) => s.as_char_ptr(),
-                    None => ptr::null(),
-                },
-                mbox_idx.try_into()?,
-                &Self::VTABLE,
-            ))
-        }?;
+        data: impl PinInit<T::Data, Error> + 'a,
+    ) -> impl PinInit<Self, Error> + 'a
+    where
+        T: 'a,
+    {
+        try_pin_init!(&this in Self {
+            data <- data,
+            _pin: PhantomPinned,
+            rtk: {
+                let mbox_idx = mbox_idx.try_into()?;
+                // SAFETY: `dev` is valid. The cookie is the pinned address of `Self`, which
+                // outlives the C client: `PinnedDrop` frees the client before `data` is dropped.
+                unsafe {
+                    from_err_ptr(bindings::apple_rtkit_init(
+                        dev.as_raw(),
+                        this.as_ptr().cast(),
+                        match mbox_name {
+                            Some(s) => s.as_char_ptr(),
+                            None => ptr::null(),
+                        },
+                        mbox_idx,
+                        &Self::VTABLE,
+                    ))
+                }?
+            },
+        }? Error)
+    }
 
-        guard.dismiss();
-        // INVARIANT: `rtk` and `data` are valid here.
-        Ok(Self {
-            rtk,
-            data: ptr,
-            _p: PhantomData,
-        })
+    /// Returns the data owned by this client.
+    pub fn data(&self) -> &T::Data {
+        &self.data
     }
 
     /// Boots (wakes up) the RTKit coprocessor.
-    pub fn wake(self: Pin<&mut Self>) -> Result {
+    pub fn wake(&self) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_wake(self.rtk) })
     }
 
     /// Waits for the RTKit coprocessor to finish booting.
-    pub fn boot(self: Pin<&mut Self>) -> Result {
+    pub fn boot(&self) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_boot(self.rtk) })
     }
 
     /// Starts a non-system endpoint.
-    pub fn start_endpoint(self: Pin<&mut Self>, endpoint: u8) -> Result {
+    pub fn start_endpoint(&self, endpoint: u8) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_start_ep(self.rtk, endpoint) })
     }
 
     /// Sends a message to a given endpoint.
-    pub fn send_message(self: Pin<&mut Self>, endpoint: u8, message: u64) -> Result {
+    pub fn send_message(&self, endpoint: u8, message: u64) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe {
             bindings::apple_rtkit_send_message(self.rtk, endpoint, message, ptr::null_mut(), false)
@@ -283,20 +287,17 @@ impl<T: Operations> RtKit<T> {
     }
 }
 
-// SAFETY: `RtKit` operations require a mutable reference
+// SAFETY: The C client serialises messages through its mailbox, and `T::Data` is `Sync`.
 unsafe impl<T: Operations> Sync for RtKit<T> {}
 
-// SAFETY: `RtKit` operations require a mutable reference
+// SAFETY: The C client is not tied to a thread, and `T::Data` is `Send`.
 unsafe impl<T: Operations> Send for RtKit<T> {}
 
-impl<T: Operations> Drop for RtKit<T> {
-    fn drop(&mut self) {
-        // SAFETY: The pointer is valid by the type invariant.
+#[pinned_drop]
+impl<T: Operations> PinnedDrop for RtKit<T> {
+    fn drop(self: Pin<&mut Self>) {
+        // SAFETY: The pointer is valid by the type invariant. After this returns no callback
+        // runs, so `data` can be dropped.
         unsafe { bindings::apple_rtkit_free(self.rtk) };
-
-        // Free context data.
-        //
-        // SAFETY: This matches the call to `into_foreign` from `new` in the success case.
-        unsafe { T::Data::from_foreign(self.data.cast()) };
     }
 }
