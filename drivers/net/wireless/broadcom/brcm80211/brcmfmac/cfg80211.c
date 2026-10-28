@@ -3235,6 +3235,9 @@ int brcmf_bss_info_check(struct brcmf_pub *drvr,
 	case BRCMF_BSS_INFO_VER_112:
 		fixed = sizeof(struct brcmf_bss_info_v112_le);
 		break;
+	case BRCMF_BSS_INFO_VER_116:
+		fixed = sizeof(struct brcmf_bss_info_v116_le);
+		break;
 	default:
 		bphy_err(drvr, "BSS info version %u unsupported\n", version);
 		return -EOPNOTSUPP;

@@ -21,6 +21,7 @@
 
 #define BRCMF_BSS_INFO_VER_109		109
 #define BRCMF_BSS_INFO_VER_112		112
+#define BRCMF_BSS_INFO_VER_116		116
 #define BRCMF_BSS_RSSI_ON_CHANNEL	0x0004
 
 #define BRCMF_STA_BRCM			0x00000001	/* Running a Broadcom driver */
@@ -385,10 +386,34 @@ struct brcmf_bss_info_v112_le {
 	u8 pad[20];
 };
 
+struct brcmf_eht_mcsmap {
+	u8 mcs_0_13[4];
+	u8 mcs_14_15;
+} __packed;
+
+/* reserved2 of the common fields carries the 6 GHz regulatory info */
+struct brcmf_bss_info_v116_le {
+	struct brcmf_bss_info_le info;
+	__le16 vht_mcsmap;	/* STA's associated VHT MCS map */
+	__le16 vht_mcsmap_prop;	/* STA's associated proprietary VHT MCS map */
+	__le16 vht_txmcsmap_prop;	/* proprietary VHT tx MCS map */
+	__le32 he_mcsmap;	/* STA's associated HE MCS map */
+	__le32 he_rxmcsmap;	/* HE rx MCS map (802.11ax IE, HE_CAP_MCS_MAP_*) */
+	__le32 he_txmcsmap;	/* HE tx MCS map (802.11ax IE, HE_CAP_MCS_MAP_*) */
+	__le32 timestamp[2];	/* beacon timestamp */
+	u8 eht_cap;		/* BSS is EHT capable */
+	u8 bss_color;
+	struct brcmf_eht_mcsmap eht_mcsmap_sta;	/* STA's associated EHT MCS map */
+	struct brcmf_eht_mcsmap eht_mcsmap;	/* EHT MCS map of the BSS channel width */
+	u8 mld_addr[ETH_ALEN];	/* AP MLD address */
+	u8 reserved5[2];
+};
+
 static_assert(offsetof(struct brcmf_bss_info_le, ie_offset) == 116);
 static_assert(sizeof(struct brcmf_bss_info_le) == 126);
 static_assert(sizeof(struct brcmf_bss_info_v109_le) == 132);
 static_assert(sizeof(struct brcmf_bss_info_v112_le) == 172);
+static_assert(sizeof(struct brcmf_bss_info_v116_le) == 172);
 
 struct brcm_rateset_le {
 	/* # rates in this set */
