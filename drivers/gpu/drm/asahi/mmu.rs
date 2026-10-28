@@ -559,10 +559,15 @@ pub(crate) struct Vm {
     dev: ARef<device::Device>,
     id: u64,
     gpuvm: ARef<gpuvm::GpuVm<VmInner>>,
+    unique: VmLock,
     dummy_obj: ARef<gem::Object>,
     binding: Arc<Mutex<VmBinding>>,
 }
 no_debug!(Vm);
+
+/// Exclusive access to a [`Vm`]'s GPUVM state: the VA tree, the page tables and the
+/// mm allocator. Every map, unmap and remap of the Vm runs with it held.
+type VmLock = Arc<Mutex<gpuvm::UniqueRefGpuVm<VmInner>>>;
 
 /// Slot data for a [`Vm`] slot (nothing, we only care about the indices).
 pub(crate) struct SlotInner();
@@ -622,6 +627,7 @@ pub(crate) struct KernelMappingInner {
     // - Drop the GEM BO next, since BO free can take the resv lock itself
     // - Drop the owner GpuVm last, since that again can take resv locks when the refcount drops to 0
     owner: ARef<gpuvm::GpuVm<VmInner>>,
+    vm_lock: VmLock,
     _gem: Option<ARef<gem::Object>>,
     bo: Option<ARef<gpuvm::GpuVmBo<VmInner>>>,
     uat_inner: Arc<UatInner>,
@@ -807,13 +813,10 @@ impl Drop for KernelMapping {
         // 4. Unmap
         // 5. Flush the TLB range again
 
-        let mut vm_exec = unsafe {
-            self.0
-                .owner
-                .exec_lock(None, false)
-                .expect("exec_lock failed in KernelMapping::drop")
-        };
-        let owner = vm_exec.unique_gpuvm.data();
+        let vm_lock = self.0.vm_lock.clone();
+        let mut vm_guard = vm_lock.lock();
+        let vm = vm_guard.as_mut().get_mut();
+        let owner = vm.data();
 
         if self.0.prot.is_cached_noncoherent() {
             mod_pr_debug!(
@@ -1093,11 +1096,13 @@ impl Vm {
             },
         )?;
         let gpuvm = ARef::from(&*unique_gpuvm);
+        let unique = Arc::pin_init(new_mutex!(unique_gpuvm, "Asahi::GpuVm"), GFP_KERNEL)?;
 
         Ok(Vm {
             dev: dev.as_ref().as_ref().into(),
             id,
             gpuvm,
+            unique,
             dummy_obj: dummy_obj.gem.clone(),
             binding,
         })
@@ -1129,10 +1134,9 @@ impl Vm {
             .obtain(gem, pin_init!(VmBoData { segments <- new_mutex!(None) }))?;
 
         let size = object_range.range();
-        let mut vm_exec = unsafe {
-            self.gpuvm.exec_lock(/*Some(gem)*/ None, false)?
-        };
-        let inner = vm_exec.unique_gpuvm.data();
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
+        let inner = vm.data();
 
         let mut vm_bo_guard = vm_bo.data().segments.lock();
         if vm_bo_guard.is_none() {
@@ -1146,6 +1150,7 @@ impl Vm {
         let node = inner.mm.insert_node_in_range(
             KernelMappingInner {
                 owner: self.gpuvm.clone(),
+                vm_lock: self.unique.clone(),
                 uat_inner,
                 prot,
                 bo: Some(vm_bo),
@@ -1162,9 +1167,9 @@ impl Vm {
         )?;
 
         let ret = inner.map_node(&node, prot);
-        // Drop the exec_lock first, so that if map_node failed the
+        // Drop the Vm lock first, so that if map_node failed the
         // KernelMappingInner destructur does not deadlock.
-        core::mem::drop(vm_exec);
+        core::mem::drop(vm_guard);
         ret?;
         Ok(KernelMapping(node))
     }
@@ -1188,15 +1193,9 @@ impl Vm {
             .gpuvm
             .obtain(&gem, pin_init!(VmBoData { segments <-new_mutex!(None) }))?;
 
-        // SAFETY: no other UniqRefGpuVm exists so `GpuVm::exec_lock()` is safe
-        let mut vm_exec = unsafe {
-            self.gpuvm
-                .exec_lock(/*Some(&gem)*/ None, false)
-                .inspect_err(|_| {
-                    dev_err!(self.dev, "map_at(): Failed to exec_lock gpuvm\n");
-                })?
-        };
-        let inner = vm_exec.unique_gpuvm.data();
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
+        let inner = vm.data();
 
         let mut vm_bo_guard = vm_bo.data().segments.lock();
         if vm_bo_guard.is_none() {
@@ -1210,6 +1209,7 @@ impl Vm {
         let node = inner.mm.reserve_node(
             KernelMappingInner {
                 owner: self.gpuvm.clone(),
+                vm_lock: self.unique.clone(),
                 uat_inner,
                 prot,
                 bo: Some(vm_bo),
@@ -1223,9 +1223,9 @@ impl Vm {
         )?;
 
         let ret = inner.map_node(&node, prot);
-        // Drop the exec_lock first, so that if map_node failed the
+        // Drop the Vm lock first, so that if map_node failed the
         // KernelMappingInner destructur does not deadlock.
-        core::mem::drop(vm_exec);
+        core::mem::drop(vm_guard);
         ret?;
         Ok(KernelMapping(node))
     }
@@ -1262,10 +1262,9 @@ impl Vm {
         // Mapping needs a complete context
         let mut ctx = StepContext::new(Some(device.as_ref().as_ref()), prot, &mut resources)?;
 
-        let mut vm_exec = unsafe {
-            self.gpuvm.exec_lock(/*Some(&gem)*/ None, false)?
-        };
-        let inner = vm_exec.unique_gpuvm.data();
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
+        let inner = vm.data();
 
         let mut vm_bo_guard = vm_bo.data().segments.lock();
         if vm_bo_guard.is_none() {
@@ -1313,7 +1312,7 @@ impl Vm {
             context: &mut ctx,
             flags,
         };
-        vm_exec.unique_gpuvm.sm_map(req)
+        vm.sm_map(req)
     }
 
     /// Add a direct MMIO mapping to this Vm at a free address.
@@ -1325,7 +1324,8 @@ impl Vm {
         size: usize,
         prot: Prot,
     ) -> Result<KernelMapping> {
-        let mut vm_exec = unsafe { self.gpuvm.exec_lock(None, false)? };
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
 
         if (iova as usize | phys | size) & UAT_PGMSK != 0 {
             dev_err!(
@@ -1340,11 +1340,12 @@ impl Vm {
 
         dev_info!(dev, "MMU: IO map: {:#x}:{:#x} -> {:#x}\n", phys, size, iova);
 
-        let inner = vm_exec.unique_gpuvm.data();
+        let inner = vm.data();
         let uat_inner = inner.uat_inner.clone();
         let node = inner.mm.reserve_node(
             KernelMappingInner {
                 owner: self.gpuvm.clone(),
+                vm_lock: self.unique.clone(),
                 uat_inner,
                 prot,
                 bo: None,
@@ -1363,7 +1364,7 @@ impl Vm {
             prot,
             false,
         );
-        // Drop the exec_lock first, so that if map_node failed the
+        // Drop the Vm lock first, so that if map_node failed the
         // KernelMappingInner destructur does not deadlock.
         let _ = inner;
         ret?;
@@ -1388,10 +1389,11 @@ impl Vm {
         };
         let mut ctx = StepContext::new(dev, Prot::default(), &mut resources)?;
 
-        let mut vm_exec = unsafe { self.gpuvm.exec_lock(None, false)? };
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
 
         mod_dev_dbg!(self.dev, "MMU: sm_unmap: {:#x}:{:#x}\n", iova, size);
-        vm_exec.unique_gpuvm.sm_unmap(iova, size, &mut ctx)
+        vm.sm_unmap(iova, size, &mut ctx)
     }
 
     /// Drop mappings for a given bo.
@@ -1402,14 +1404,15 @@ impl Vm {
         };
         let mut ctx = StepContext::new(None, Prot::default(), &mut resources)?;
 
-        let mut vm_exec = unsafe { self.gpuvm.exec_lock(None, false)? };
+        let mut vm_guard = self.unique.lock();
+        let vm = vm_guard.as_mut().get_mut();
 
-        if let Some(bo) = vm_exec.unique_gpuvm.find_bo(gem) {
+        if let Some(bo) = vm.find_bo(gem) {
             mod_dev_dbg!(self.dev, "MMU: bo_unmap\n");
-            vm_exec.unique_gpuvm.bo_unmap(&mut ctx, &bo)?;
+            vm.bo_unmap(&mut ctx, &bo)?;
             mod_dev_dbg!(self.dev, "MMU: bo_unmap done\n");
-            // We need to drop the exec_lock first, then the GpuVmBo since that will take the lock itself.
-            core::mem::drop(vm_exec);
+            // Drop the Vm lock before the GpuVmBo, whose release takes the GEM gpuva lock.
+            core::mem::drop(vm_guard);
             core::mem::drop(bo);
         }
         Ok(())

@@ -379,7 +379,7 @@ impl<T: DriverGpuVm> UniqueRefGpuVm<T> {
             user_context: context,
         };
         // SAFETY:
-        // * GpuVmExec implies the right locks are held.
+        // * `&mut self` is the unique reference to this GpuVm, so no other VA tree update runs concurrently.
         // * The private data is a valid SmData.
         to_result(unsafe { bindings::drm_gpuvm_bo_unmap(bo.as_raw(), (&raw mut p).cast()) })
     }
