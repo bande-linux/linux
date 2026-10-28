@@ -37,8 +37,6 @@ use kernel::{
         gpuvm::{
             self,
             GpuVaAlloc,
-            GpuVaFlag,
-            GpuVaFlags,
             OpMap,
             OpMapRequest,
             OpMapped,
@@ -240,6 +238,9 @@ struct VmOpResources {
 struct StepContext<'ctx> {
     dev: Option<&'ctx device::Device<Bound>>,
     prot: Prot,
+    /// Map the first page of the request's GEM range across the whole VA range
+    /// (`DRM_ASAHI_BIND_SINGLE_PAGE`).
+    single_page: bool,
 
     /// Preallocated resources that can be used when executing the request.
     resources: &'ctx mut VmOpResources,
@@ -249,11 +250,13 @@ impl<'ctx> StepContext<'ctx> {
     fn new(
         dev: Option<&'ctx device::Device<Bound>>,
         prot: Prot,
+        single_page: bool,
         resources: &'ctx mut VmOpResources,
     ) -> Result<StepContext<'ctx>> {
         Ok(Self {
             dev,
             prot,
+            single_page,
             resources,
         })
     }
@@ -301,7 +304,7 @@ impl gpuvm::DriverGpuVm for VmInner {
         let mut left = op.length() as usize;
         let mut offset = op.gem_offset() as usize;
 
-        let one_page = op.flags().contains(gpuvm::GpuVaFlag::REPEAT);
+        let one_page = ctx.single_page;
 
         let Some(dev) = ctx.dev else {
             dev_err!(self.dev.as_ref(), "StepContext missed Bound device!");
@@ -1260,7 +1263,7 @@ impl Vm {
         };
 
         // Mapping needs a complete context
-        let mut ctx = StepContext::new(Some(device.as_ref().as_ref()), prot, &mut resources)?;
+        let mut ctx = StepContext::new(Some(device.as_ref().as_ref()), prot, single_page, &mut resources)?;
 
         let mut vm_guard = self.unique.lock();
         let vm = vm_guard.as_mut().get_mut();
@@ -1288,13 +1291,6 @@ impl Vm {
             return Err(EINVAL);
         }
 
-        let (flags, gem_range) = if single_page {
-            ((GpuVaFlag::REPEAT).into(), UAT_PGSZ as u32)
-        } else {
-            (GpuVaFlags::empty(), 0u32)
-        };
-        let _gem_range = 0u32;
-
         mod_dev_dbg!(
             inner.dev,
             "MMU: sm_map: {:#x} [{:#x}] -> {:#x}\n",
@@ -1307,10 +1303,8 @@ impl Vm {
             addr,
             range: size,
             gem_offset: offset,
-            gem_range,
             vm_bo: &vm_bo,
             context: &mut ctx,
-            flags,
         };
         vm.sm_map(req)
     }
@@ -1387,7 +1381,7 @@ impl Vm {
                 None,
             ],
         };
-        let mut ctx = StepContext::new(dev, Prot::default(), &mut resources)?;
+        let mut ctx = StepContext::new(dev, Prot::default(), false, &mut resources)?;
 
         let mut vm_guard = self.unique.lock();
         let vm = vm_guard.as_mut().get_mut();
@@ -1402,15 +1396,16 @@ impl Vm {
         let mut resources = VmOpResources {
             preallocated_gpuvas: [None, None, None],
         };
-        let mut ctx = StepContext::new(None, Prot::default(), &mut resources)?;
+        let mut ctx = StepContext::new(None, Prot::default(), false, &mut resources)?;
 
         let mut vm_guard = self.unique.lock();
         let vm = vm_guard.as_mut().get_mut();
 
         if let Some(bo) = vm.find_bo(gem) {
-            mod_dev_dbg!(self.dev, "MMU: bo_unmap\n");
-            vm.bo_unmap(&mut ctx, &bo)?;
-            mod_dev_dbg!(self.dev, "MMU: bo_unmap done\n");
+            for range in bo.va_ranges()? {
+                mod_dev_dbg!(self.dev, "MMU: drop mapping {:#x}..{:#x}\n", range.start, range.end);
+                vm.sm_unmap(range.start, range.end - range.start, &mut ctx)?;
+            }
             // Drop the Vm lock before the GpuVmBo, whose release takes the GEM gpuva lock.
             core::mem::drop(vm_guard);
             core::mem::drop(bo);

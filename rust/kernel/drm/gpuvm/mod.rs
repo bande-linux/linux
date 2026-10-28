@@ -17,10 +17,7 @@ use kernel::{
     },
     bindings,
     drm,
-    drm::gem::{
-        BaseObject,
-        IntoGEMObject, //
-    },
+    drm::gem::IntoGEMObject,
     error::to_result,
     prelude::*,
     sync::aref::{
@@ -56,7 +53,6 @@ pub use self::vm_bo::*;
 
 mod va;
 pub use self::va::*;
-
 
 /// A DRM GPU VA manager.
 ///
@@ -117,7 +113,6 @@ impl<T: DriverGpuVm> GpuVm<T> {
             sm_step_map: Some(Self::sm_step_map),
             sm_step_unmap: Some(Self::sm_step_unmap),
             sm_step_remap: Some(Self::sm_step_remap),
-            sm_can_merge_flags: None,
         }
     }
 
@@ -223,6 +218,21 @@ impl<T: DriverGpuVm> GpuVm<T> {
         Ok(GpuVmBoAlloc::new(self, obj, data)?.obtain())
     }
 
+    /// Returns the [`GpuVmBo`] of `obj` in this VM, if `obj` has one.
+    pub fn find_bo(&self, obj: &T::Object) -> Option<ARef<GpuVmBo<T>>> {
+        // SAFETY: `obj` is a valid GEM object, so its gpuva mutex is initialized.
+        let gpuva_lock =
+            unsafe { crate::sync::Mutex::<()>::from_raw(&raw mut (*obj.as_raw()).gpuva.lock) };
+        let _guard = gpuva_lock.lock();
+
+        // SAFETY: Both pointers are valid and the gpuva lock of `obj` is held.
+        let ptr = unsafe { bindings::drm_gpuvm_bo_find(self.as_raw(), obj.as_raw()) };
+
+        // INVARIANTS: `drm_gpuvm_bo_find()` only returns a vm_bo that is in the gem list.
+        // SAFETY: `drm_gpuvm_bo_find()` returns a new reference, or NULL.
+        NonNull::new(ptr.cast()).map(|p| unsafe { ARef::<GpuVmBo<T>>::from_raw(p) })
+    }
+
     /// Clean up buffer objects that are no longer used.
     #[inline]
     pub fn deferred_cleanup(&self) {
@@ -236,7 +246,6 @@ impl<T: DriverGpuVm> GpuVm<T> {
         // SAFETY: We may call this with any GPUVM and GEM object.
         unsafe { bindings::drm_gpuvm_is_extobj(self.as_raw(), obj.as_raw()) }
     }
-
 
     /// Free this GPUVM.
     ///
@@ -302,7 +311,6 @@ pub trait DriverGpuVm: Sized + Send + Sync {
     ) -> Result<OpRemapped<'op, Self>, Error>;
 }
 
-
 /// The core of the DRM GPU VA manager.
 ///
 /// This object is a unique reference to the VM that can access the interval tree and the Rust
@@ -328,26 +336,6 @@ impl<T: DriverGpuVm> UniqueRefGpuVm<T> {
     pub fn data(&mut self) -> &mut T {
         // SAFETY: By the type invariants we may access `data`.
         unsafe { &mut *self.0.data.get() }
-    }
-
-    /// Get the [`GpuVmBo`] for this gem object if it exists.
-    pub fn find_bo(&mut self, obj: &T::Object) -> Option<ARef<GpuVmBo<T>>> {
-        obj.lock_gpuva();
-        // SAFETY: drm_gem_object.gpuva.lock was just locked.
-        let ptr = unsafe {
-            bindings::drm_gpuvm_bo_find(self.as_raw() as *mut _, obj.as_raw() as *const _ as *mut _)
-        };
-        obj.unlock_gpuva();
-        if ptr.is_null() {
-            None
-        } else {
-            // SAFETY: we just checked that ptr is non-null
-            let nonnull = unsafe { NonNull::new_unchecked(ptr.cast()) };
-
-            // INVARIANTS: `drm_gpuvm_bo_find` only returns a vm_bo that is in the GEM's list.
-            // SAFETY: `drm_gpuvm_bo_find` returns a new reference to the vm_bo.
-            Some(unsafe { ARef::<GpuVmBo<T>>::from_raw(nonnull) })
-        }
     }
 }
 
