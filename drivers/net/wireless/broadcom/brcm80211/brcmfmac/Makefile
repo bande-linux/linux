@@ -25,8 +25,10 @@ brcmfmac-objs += \
 		btcoex.o \
 		vendor.o \
 		pno.o \
+		join_param.o \
 		scan_param.o \
-		xtlv.o
+		xtlv.o \
+		interface_create.o
 
 brcmfmac-$(CONFIG_BRCMFMAC_PROTO_BCDC) += \
 		bcdc.o \

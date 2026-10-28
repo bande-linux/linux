@@ -590,11 +590,67 @@ struct brcmf_escan_result_le {
 struct brcmf_assoc_params_le {
 	/* 00:00:00:00:00:00: broadcast scan */
 	u8 bssid[ETH_ALEN];
+	/* 0: use chanspec_num, and the single bssid,
+	 * otherwise count of chanspecs in chanspec_list
+	 * AND paired bssids following chanspec_list
+	 * also, chanspec_num has to be set to zero
+	 * for bssid list to be used
+	 */
+	__le16 bssid_cnt;
 	/* 0: all available channels, otherwise count of chanspecs in
 	 * chanspec_list */
 	__le32 chanspec_num;
 	/* list of chanspecs */
-	__le16 chanspec_list[1];
+	__le16 chanspec_list[];
+};
+
+struct brcmf_assoc_params_v1_le {
+	__le16 version;
+	__le16 flags;
+	/* 00:00:00:00:00:00: broadcast scan */
+	u8 bssid[ETH_ALEN];
+	/* 0: use chanspec_num, and the single bssid,
+	 * otherwise count of chanspecs in chanspec_list
+	 * AND paired bssids following chanspec_list
+	 * also, chanspec_num has to be set to zero
+	 * for bssid list to be used
+	 */
+	__le16 bssid_cnt;
+	/* 0: all available channels, otherwise count of chanspecs in
+	 * chanspec_list */
+	__le32 chanspec_num;
+	/* list of chanspecs */
+	__le16 chanspec_list[];
+};
+
+/* ML assoc and scan params */
+struct brcmf_ml_assoc_scan_params_v1_le {
+	/* whether to follow strictly ordered assoc ? */
+	u8 ml_assoc_mode;
+	/* to identify whether ml scan needs to be triggered */
+	u8 ml_scan_mode;
+	u8 pad[2];
+};
+
+struct brcmf_assoc_params_v2_le {
+	__le16 version;
+	__le16 flags;
+	/* 00:00:00:00:00:00: broadcast scan */
+	u8 bssid[ETH_ALEN];
+	/* 0: use chanspec_num, and the single bssid,
+	 * otherwise count of chanspecs in chanspec_list
+	 * AND paired bssids following chanspec_list
+	 * also, chanspec_num has to be set to zero
+	 * for bssid list to be used
+	 */
+	__le16 bssid_cnt;
+	/* Multilink association and scan params */
+	struct brcmf_ml_assoc_scan_params_v1_le ml_assoc_scan_params;
+	/* 0: all available channels, otherwise count of chanspecs in
+	 * chanspec_list */
+	__le32 chanspec_num;
+	/* list of chanspecs */
+	__le16 chanspec_list[];
 };
 
 /**
@@ -619,9 +675,19 @@ struct brcmf_join_params {
 	struct brcmf_assoc_params_le params_le;
 };
 
+struct brcmf_join_params_v1 {
+	struct brcmf_ssid_le ssid_le;
+	struct brcmf_assoc_params_v1_le params_le;
+};
+struct brcmf_join_params_v2 {
+	struct brcmf_ssid_le ssid_le;
+	struct brcmf_assoc_params_v2_le params_le;
+};
+
 /* scan params for extended join */
 struct brcmf_join_scan_params_le {
 	u8 scan_type;		/* 0 use default, active or passive scan */
+	u8 PAD[3];
 	__le32 nprobes;		/* -1 use default, nr of probes per channel */
 	__le32 active_time;	/* -1 use default, dwell time per channel for
 				 * active scanning
@@ -634,11 +700,46 @@ struct brcmf_join_scan_params_le {
 				 */
 };
 
+/* scan params for extended join */
+struct brcmf_join_scan_params_v1_le {
+	u8 scan_type; /* 0 use default, active or passive scan */
+	u8 ml_scan_mode; /* 0 scan ML channels in RNR, 1 scan only provided channels */
+	u8 PAD[2];
+	__le32 nprobes; /* -1 use default, nr of probes per channel */
+	__le32 active_time; /* -1 use default, dwell time per channel for
+				 * active scanning
+				 */
+	__le32 passive_time; /* -1 use default, dwell time per channel
+				 * for passive scanning
+				 */
+	__le32 home_time; /* -1 use default, dwell time for the home
+				 * channel between channel scans
+				 */
+};
+
 /* extended join params */
 struct brcmf_ext_join_params_le {
 	struct brcmf_ssid_le ssid_le;	/* {0, ""}: wildcard scan */
 	struct brcmf_join_scan_params_le scan_le;
 	struct brcmf_assoc_params_le assoc_le;
+};
+
+/* extended join params */
+struct brcmf_ext_join_params_v1_le {
+	__le16 version;
+	u16 pad;
+	struct brcmf_ssid_le ssid_le;	/* {0, ""}: wildcard scan */
+	struct brcmf_join_scan_params_le scan_le;
+	struct brcmf_assoc_params_v1_le assoc_le;
+};
+
+/* extended join params v2 */
+struct brcmf_ext_join_params_v2_le {
+	__le16 version;
+	u16 pad;
+	struct brcmf_ssid_le ssid_le;	/* {0, ""}: wildcard scan */
+	struct brcmf_join_scan_params_v1_le scan_le;
+	struct brcmf_assoc_params_v2_le assoc_le;
 };
 
 struct brcmf_wsec_key {
@@ -723,13 +824,17 @@ struct brcmf_channel_info_le {
 	__le32 scan_channel;
 };
 
+#define BRCMF_MAX_ASSOC_OUI_NUM 6
+#define BRCMF_ASSOC_OUI_LEN 3
 struct brcmf_sta_info_le {
 	__le16 ver;		/* version of this struct */
 	__le16 len;		/* length in bytes of this structure */
 	__le16 cap;		/* sta's advertised capabilities */
+	u16 PAD;
 	__le32 flags;		/* flags defined below */
 	__le32 idle;		/* time since data pkt rx'd from sta */
 	u8 ea[ETH_ALEN];		/* Station address */
+	u16 PAD2;
 	__le32 count;			/* # rates in this set */
 	u8 rates[BRCMF_MAXRATES_IN_SET];	/* rates in 500kbps units */
 						/* w/hi bit set if basic */
@@ -761,6 +866,7 @@ struct brcmf_sta_info_le {
 	__le16 aid;                    /* association ID */
 	__le16 ht_capabilities;        /* advertised ht caps */
 	__le16 vht_flags;              /* converted vht flags */
+	u16 PAD3;
 	__le32 tx_pkts_retry_cnt;      /* # of frames where a retry was
 					 * exhausted.
 					 */
@@ -813,6 +919,13 @@ struct brcmf_sta_info_le {
 			__le32 tx_rspec;	/* Rate of last successful tx frame */
 			__le32 rx_rspec;	/* Rate of last successful rx frame */
 			__le32 wnm_cap;		/* wnm capabilities */
+			__le16 he_flags;	/* converted he flags */
+			u16 PAD;
+			struct {
+				u8 count;
+				u8 oui[BRCMF_MAX_ASSOC_OUI_NUM][BRCMF_ASSOC_OUI_LEN];
+			} vendor_oui;
+			u8 link_bw;
 		} v7;
 	};
 };
@@ -946,7 +1059,20 @@ struct brcmf_wlc_version_le {
 };
 
 /**
- * struct brcmf_wl_scan_version_le - scan interface version
+ * struct brcmf_join_version_le - join interface version
+ */
+struct brcmf_join_version_le {
+	__le16	version;		/**< version of the structure */
+	__le16	length;			/**< length of the entire structure */
+
+	/* join interface version numbers */
+	__le16	join_ver_major;		/**< join interface major version number */
+	u8	pad[2];
+};
+#define BRCMF_JOIN_VERSION_VERSION 1
+
+/**
+ * struct brcmf_scan_version_le - scan interface version
  */
 struct brcmf_scan_version_le {
         __le16  version;
