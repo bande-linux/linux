@@ -39,6 +39,14 @@ jobs:
           echo /usr/lib/ccache >> "$GITHUB_PATH"
           ccache -z
 
+      - name: Set up Rust for kernel builds
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo /cache/cargo-tools/bin >> "$GITHUB_PATH"
+          export PATH=$HOME/.cargo/bin:$PATH
+          rustup component add rust-src
+          [ -x /cache/cargo-tools/bin/bindgen ] || cargo install --locked --root /cache/cargo-tools bindgen-cli
+
       - name: Configure
         run: |
           echo "KBUILD_BUILD_TIMESTAMP=@$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -50,6 +58,7 @@ jobs:
               CONFIG_*) grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
             esac
           done < arch/arm64/configs/unbound-headless.config
+          grep -q "^CONFIG_RUST=y" .config || make rustavailable
           exit $missing
 
       - name: Build
