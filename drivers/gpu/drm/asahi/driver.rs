@@ -50,8 +50,7 @@ pub(crate) struct AsahiPlatformDriverData<'bound> {
 #[pin_data]
 pub(crate) struct AsahiDrmRegistrationData<'drm> {
     #[pin]
-    pub(crate) gpu: Arc<dyn gpu::GpuManager>,
-    pub(crate) resources: regs::Resources<'drm>,
+    pub(crate) gpu: Arc<dyn gpu::GpuManager + 'drm>,
 }
 
 /// Convenience type alias for the DRM device type for this driver.
@@ -180,19 +179,24 @@ impl platform::Driver for AsahiPlatformDriver {
 
         let gpu = match (cfg.gpu_gen, cfg.gpu_variant, compat.as_slice()) {
             (hw::GpuGen::G13, _, &[12, 3, 0]) => {
-                gpu::GpuManagerG13V12_3::new(&drm, &resources, cfg)? as Arc<dyn gpu::GpuManager>
+                gpu::GpuManagerG13V12_3::new(&drm, resources, cfg)?
+                    as Arc<dyn gpu::GpuManager + 'bound>
             }
             (hw::GpuGen::G14, hw::GpuVariant::G, &[12, 4, 0]) => {
-                gpu::GpuManagerG14V12_4::new(&drm, &resources, cfg)? as Arc<dyn gpu::GpuManager>
+                gpu::GpuManagerG14V12_4::new(&drm, resources, cfg)?
+                    as Arc<dyn gpu::GpuManager + 'bound>
             }
             (hw::GpuGen::G13, _, &[13, 5, 0]) => {
-                gpu::GpuManagerG13V13_5::new(&drm, &resources, cfg)? as Arc<dyn gpu::GpuManager>
+                gpu::GpuManagerG13V13_5::new(&drm, resources, cfg)?
+                    as Arc<dyn gpu::GpuManager + 'bound>
             }
             (hw::GpuGen::G14, hw::GpuVariant::G, &[13, 5, 0]) => {
-                gpu::GpuManagerG14V13_5::new(&drm, &resources, cfg)? as Arc<dyn gpu::GpuManager>
+                gpu::GpuManagerG14V13_5::new(&drm, resources, cfg)?
+                    as Arc<dyn gpu::GpuManager + 'bound>
             }
             (hw::GpuGen::G14, _, &[13, 5, 0]) => {
-                gpu::GpuManagerG14XV13_5::new(&drm, &resources, cfg)? as Arc<dyn gpu::GpuManager>
+                gpu::GpuManagerG14XV13_5::new(&drm, resources, cfg)?
+                    as Arc<dyn gpu::GpuManager + 'bound>
             }
             _ => {
                 dev_info!(
@@ -207,7 +211,7 @@ impl platform::Driver for AsahiPlatformDriver {
         };
         gpu.init()?;
 
-        let data = try_pin_init!(AsahiDrmRegistrationData { gpu, resources });
+        let data = try_pin_init!(AsahiDrmRegistrationData { gpu });
 
         // SAFETY: `reg` is stored in `AsahiPlatformDriverData` and dropped when the driver is
         // unbound; it is never forgotten.

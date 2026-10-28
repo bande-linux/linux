@@ -184,7 +184,7 @@ impl super::QueueInner::ver {
     /// Submit work to a render queue.
     pub(super) fn submit_render(
         &self,
-        gpu: &gpu::GpuManager::ver,
+        gpu: &gpu::GpuManager::ver<'_>,
         job: &mut Job<super::QueueJob::ver>,
         cmdbuf: &uapi::drm_asahi_cmd_render,
         vertex_attachments: &microseq::Attachments,
