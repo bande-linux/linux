@@ -1321,6 +1321,14 @@
 			status = "disabled"; /* only used on j473 */
 		};
 
+		dockchannel_uart: serial@23d128000 {
+			compatible = "apple,t8112-dockchannel-uart", "apple,dockchannel-uart";
+			reg = <0x2 0x3d128000 0x0 0x4000>,
+				<0x2 0x3d12c000 0x0 0x4000>;
+			reg-names = "config", "data";
+			status = "disabled";
+		};
+
 		pinctrl_nub: pinctrl@23d1f0000 {
 			compatible = "apple,t8112-pinctrl", "apple,pinctrl";
 			reg = <0x2 0x3d1f0000 0x0 0x4000>;

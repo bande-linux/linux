@@ -87,6 +87,16 @@ config HVC_DCC
 	  driver. This console is used through a JTAG only on ARM. If you don't have
 	  a JTAG then you probably don't want this option.
 
+config HVC_DOCKCHANNEL
+	bool "Apple dockchannel UART console"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on ARM64
+	select HVC_DRIVER
+	select SERIAL_CORE_CONSOLE
+	help
+	  Console on the dockchannel FIFO that Apple Silicon Macs expose to
+	  another Mac over the debug USB channel of their DFU USB-C port.
+
 config HVC_DCC_SERIALIZE_SMP
 	bool "Use DCC only on CPU core 0"
 	depends on SMP && HVC_DCC
