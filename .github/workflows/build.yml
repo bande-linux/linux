@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [ unbound, 'prep/**' ]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: unbound
+
+jobs:
+  build:
+    runs-on: [self-hosted, unbound]
+    timeout-minutes: 120
+
+    env:
+      MAKEFLAGS: -j8
+      KBUILD_BUILD_USER: unbound
+      KBUILD_BUILD_HOST: ci
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: unbound-linux/linux
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Configure
+        run: |
+          echo "KBUILD_BUILD_TIMESTAMP=@$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          make defconfig unbound-headless.config
+          missing=0
+          while read -r line; do
+            case "$line" in
+              "# CONFIG_"*" is not set") grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
+              CONFIG_*) grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
+            esac
+          done < arch/arm64/configs/unbound-headless.config
+          exit $missing
+
+      - name: Build
+        run: |
+          start=$SECONDS
+          make LOCALVERSION= Image modules apple/t8112-j473.dtb
+          echo "build took $((SECONDS - start)) s"
+
+      - name: Package
+        run: |
+          release=$(make -s LOCALVERSION= kernelrelease)
+          mkdir -p out/modules
+          make -s LOCALVERSION= INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1 modules_install
+          rm -f out/modules/lib/modules/$release/build
+          tar -C out/modules -cJf out/modules-$release.tar.xz lib
+          rm -f ../*.deb ../*.buildinfo ../*.changes
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends debhelper >/dev/null
+          make LOCALVERSION= KDEB_PKGVERSION=$release-$GITHUB_RUN_NUMBER \
+            DPKG_FLAGS="-d -Ppkg.linux-upstream.nokernelheaders,pkg.linux-upstream.nokerneldbg" bindeb-pkg
+          mv ../linux-image-*.deb out/
+          cp arch/arm64/boot/Image out/Image
+          cp arch/arm64/boot/dts/apple/t8112-j473.dtb out/
+          cp .config out/config-$release
+          echo "$release" > out/kernelrelease
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel
+          path: |
+            out/Image
+            out/t8112-j473.dtb
+            out/modules-*.tar.xz
+            out/config-*
+            out/kernelrelease
+            out/linux-image-*.deb
