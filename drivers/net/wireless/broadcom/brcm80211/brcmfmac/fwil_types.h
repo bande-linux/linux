@@ -210,6 +210,7 @@ enum brcmf_join_pref_types {
 	BRCMF_JOIN_PREF_WPA,
 	BRCMF_JOIN_PREF_BAND,
 	BRCMF_JOIN_PREF_RSSI_DELTA,
+	BRCMF_JOIN_PREF_RSSI_PER_BAND = 7,
 };
 
 enum brcmf_fil_p2p_if_types {
@@ -698,6 +699,15 @@ struct brcmf_join_pref_params {
 	u8 rssi_gain;
 	u8 band;
 };
+
+/* Layout from the macOS AppleBCMWLAN driver's applyRoamingCandidateBoost */
+struct brcmf_join_pref_rssi_per_band {
+	u8 type;
+	u8 len;
+	s8 boost_2g;
+	s8 boost_5g;
+	s8 boost_6g;
+} __packed;
 
 /* used for join with or without a specific bssid and channel list */
 struct brcmf_join_params {

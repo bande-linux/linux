@@ -360,6 +360,10 @@ int brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_iovar_int_get(ifp, BRCMF_FEAT_FWSUP, "sup_wpa");
 
+	ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF_RSSI_PER_BAND);
+	if (brcmf_c_set_join_pref_rssi_boost(ifp, WLC_BAND_5G, 0))
+		ifp->drvr->feat_flags &= ~BIT(BRCMF_FEAT_JOIN_PREF_RSSI_PER_BAND);
+
 	err = brcmf_fil_iovar_data_get(ifp, "join_ver", &join_ver, sizeof(join_ver));
 	if (!err) {
 		u16 ver = le16_to_cpu(join_ver.join_ver_major);

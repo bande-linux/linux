@@ -2139,12 +2139,13 @@ static void brcmf_set_join_pref(struct brcmf_if *ifp,
 		i++;
 		break;
 	case NL80211_BSS_SELECT_ATTR_RSSI_ADJUST:
-		join_pref_params[i].type = BRCMF_JOIN_PREF_RSSI_DELTA;
 		band = bss_select->param.adjust.band;
-		join_pref_params[i].band = nl80211_band_to_fwil(band);
-		join_pref_params[i].rssi_gain = bss_select->param.adjust.delta;
-		i++;
-		break;
+		err = brcmf_c_set_join_pref_rssi_boost(ifp,
+						       nl80211_band_to_fwil(band),
+						       bss_select->param.adjust.delta);
+		if (err)
+			bphy_err(drvr, "Set join_pref error (%d)\n", err);
+		return;
 	case NL80211_BSS_SELECT_ATTR_RSSI:
 	default:
 		break;

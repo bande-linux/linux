@@ -16,6 +16,7 @@
 #include "fweh.h"
 #include "fwil.h"
 #include "fwil_types.h"
+#include "feature.h"
 #include "tracepoint.h"
 #include "common.h"
 #include "of.h"
@@ -78,26 +79,62 @@ MODULE_PARM_DESC(ignore_probe_fail, "always succeed probe for debugging");
 static struct brcmfmac_platform_data *brcmfmac_pdata;
 struct brcmf_mp_global_t brcmf_mp_global;
 
+int brcmf_c_set_join_pref_rssi_boost(struct brcmf_if *ifp, u8 band, s8 boost)
+{
+	const struct brcmf_join_pref_params rssi = {
+		.type = BRCMF_JOIN_PREF_RSSI,
+		.len = 2,
+	};
+	struct brcmf_join_pref_params delta[2] = {
+		{
+			.type = BRCMF_JOIN_PREF_RSSI_DELTA,
+			.len = 2,
+			.rssi_gain = boost,
+			.band = band,
+		},
+		rssi,
+	};
+	struct {
+		struct brcmf_join_pref_rssi_per_band boost;
+		struct brcmf_join_pref_params rssi;
+	} __packed per_band = {
+		.boost = {
+			.type = BRCMF_JOIN_PREF_RSSI_PER_BAND,
+			.len = 3,
+		},
+		.rssi = rssi,
+	};
+
+	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF_RSSI_PER_BAND))
+		return brcmf_fil_iovar_data_set(ifp, "join_pref", delta,
+						sizeof(delta));
+
+	switch (band) {
+	case WLC_BAND_2G:
+		per_band.boost.boost_2g = boost;
+		break;
+	case WLC_BAND_5G:
+		per_band.boost.boost_5g = boost;
+		break;
+	case WLC_BAND_6G:
+		per_band.boost.boost_6g = boost;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return brcmf_fil_iovar_data_set(ifp, "join_pref", &per_band,
+					sizeof(per_band));
+}
+
 void brcmf_c_set_joinpref_default(struct brcmf_if *ifp)
 {
-	struct brcmf_pub *drvr = ifp->drvr;
-	struct brcmf_join_pref_params join_pref_params[2];
 	int err;
 
-	/* Setup join_pref to select target by RSSI (boost on 5GHz) */
-	join_pref_params[0].type = BRCMF_JOIN_PREF_RSSI_DELTA;
-	join_pref_params[0].len = 2;
-	join_pref_params[0].rssi_gain = BRCMF_JOIN_PREF_RSSI_BOOST;
-	join_pref_params[0].band = WLC_BAND_5G;
-
-	join_pref_params[1].type = BRCMF_JOIN_PREF_RSSI;
-	join_pref_params[1].len = 2;
-	join_pref_params[1].rssi_gain = 0;
-	join_pref_params[1].band = 0;
-	err = brcmf_fil_iovar_data_set(ifp, "join_pref", join_pref_params,
-				       sizeof(join_pref_params));
+	err = brcmf_c_set_join_pref_rssi_boost(ifp, WLC_BAND_5G,
+					       BRCMF_JOIN_PREF_RSSI_BOOST);
 	if (err)
-		bphy_err(drvr, "Set join_pref error (%d)\n", err);
+		bphy_err(ifp->drvr, "Set join_pref error (%d)\n", err);
 }
 
 static int brcmf_c_download(struct brcmf_if *ifp, u16 flag,
@@ -408,8 +445,6 @@ int brcmf_c_preinit_dcmds(struct brcmf_if *ifp)
 		bphy_err(drvr, "failed setting mpc\n");
 		goto done;
 	}
-
-	brcmf_c_set_joinpref_default(ifp);
 
 	/* Setup default scan channel time */
 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_CHANNEL_TIME,

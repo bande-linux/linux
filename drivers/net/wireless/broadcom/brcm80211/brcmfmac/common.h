@@ -61,6 +61,7 @@ struct brcmf_mp_device {
 	} bus;
 };
 
+int brcmf_c_set_join_pref_rssi_boost(struct brcmf_if *ifp, u8 band, s8 boost);
 void brcmf_c_set_joinpref_default(struct brcmf_if *ifp);
 
 struct brcmf_mp_device *brcmf_get_module_param(struct device *dev,

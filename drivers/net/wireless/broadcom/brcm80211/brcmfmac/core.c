@@ -1262,6 +1262,8 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 	if (ret)
 		goto fail;
 
+	brcmf_c_set_joinpref_default(ifp);
+
 	/* Setup event_msgs, enable E_IF */
 	ret = brcmf_fweh_init_events(ifp);
 	if (ret)
