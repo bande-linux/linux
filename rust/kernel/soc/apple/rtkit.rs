@@ -228,7 +228,10 @@ impl<T: Operations> RtKit<T> {
         mbox_name: Option<&'static CStr>,
         mbox_idx: usize,
         data: impl PinInit<T::Data, Error> + 'a,
-    ) -> impl PinInit<Self, Error> + 'a {
+    ) -> impl PinInit<Self, Error> + 'a
+    where
+        T: 'a,
+    {
         try_pin_init!(&this in Self {
             data <- data,
             _pin: PhantomPinned,
