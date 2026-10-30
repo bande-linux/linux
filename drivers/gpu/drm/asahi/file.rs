@@ -169,7 +169,7 @@ impl SyncItem {
         in_count: u32,
         out_count: u32,
     ) -> Result<KVec<SyncItem>> {
-        let count = in_count + out_count;
+        let count = in_count.checked_add(out_count).ok_or(EINVAL)?;
         let mut vec = KVec::with_capacity(count as usize, GFP_KERNEL)?;
 
         const STRIDE: usize = core::mem::size_of::<uapi::drm_asahi_sync>();
@@ -577,7 +577,7 @@ impl File {
         let vm_id = data.vm_id.try_into()?;
 
         let mut vec = KVec::new();
-        let size = (data.stride * data.num_binds) as usize;
+        let size = data.stride.checked_mul(data.num_binds).ok_or(EINVAL)? as usize;
         let reader = UserSlice::new(UserPtr::from_addr(data.userptr as _), size).reader();
         reader.read_all(&mut vec, GFP_KERNEL)?;
         let mut reader = Reader::new(&vec);
