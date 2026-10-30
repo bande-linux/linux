@@ -1242,8 +1242,6 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		disable_irq(dcp->hdmi_hpd_irq);
 	dcp_stop_hpd_work(dcp);
 
-	typec_mux_put(dcp->typec_mux);
-
 	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
 		cancel_work_sync(&dcp->bl_register_wq);
 		cancel_work_sync(&dcp->bl_update_wq);
@@ -1322,6 +1320,7 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	int surf, num_surfs;
 	u32 surf_en;
 	u32 mux_index;
+	int ret;
 
 	fw_compat = dcp_check_firmware_version(dev);
 	if (fw_compat == DCP_FIRMWARE_UNKNOWN)
@@ -1378,7 +1377,6 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	}
 
 	if (dcp->phy) {
-		int ret;
 		/*
 		 * Request DP2HDMI related GPIOs as optional for DP-altmode
 		 * compatibility. J180D misses a dp2hdmi-pwren GPIO in the
@@ -1454,12 +1452,19 @@ static int dcp_platform_probe(struct platform_device *pdev)
 		}
 	}
 
-	return component_add(&pdev->dev, &dcp_comp_ops);
+	ret = component_add(&pdev->dev, &dcp_comp_ops);
+	if (ret)
+		typec_mux_put(dcp->typec_mux);
+
+	return ret;
 }
 
 static void dcp_platform_remove(struct platform_device *pdev)
 {
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
 	component_del(&pdev->dev, &dcp_comp_ops);
+	typec_mux_put(dcp->typec_mux);
 }
 
 static void dcp_platform_shutdown(struct platform_device *pdev)
