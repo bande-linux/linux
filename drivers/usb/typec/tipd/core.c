@@ -1800,6 +1800,12 @@ static void cd321x_remove(struct tps6598x *tps)
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
 	cancel_delayed_work_sync(&cd321x->update_work);
+
+	/*
+	 * Stop the USB controller before tps6598x_disconnect() sets the mux to
+	 * safe mode, which reconfigures the ATC PHY.
+	 */
+	usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 }
 
 static int tps6598x_probe(struct i2c_client *client)
