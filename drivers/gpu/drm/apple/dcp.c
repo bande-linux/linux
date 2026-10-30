@@ -1307,7 +1307,7 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		iomfb_shutdown(dcp);
 
 	if (dcp->rtk) {
-		/* apple_rtkit_wake() boots a quiesced DCP (m1n1 display_shutdown(), internal panels) */
+		/* apple_rtkit_wake() boots a quiesced DCP (m1n1, internal panels) */
 		ret = dcp->crashed ? -EIO : 0;
 		if (!ret && apple_rtkit_is_running(dcp->rtk))
 			ret = apple_rtkit_quiesce(dcp->rtk);
