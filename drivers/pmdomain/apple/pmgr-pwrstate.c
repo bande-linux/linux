@@ -86,7 +86,7 @@ static int apple_pmgr_ps_set(struct generic_pm_domain *genpd, u32 pstate, bool a
 
 		if (ret < 0)
 			dev_err(ps->dev, "PS %s: Failed to set reset/disable bits (now: 0x%x)\n",
-				genpd->name, reg);
+				genpd->name, cur);
 	}
 
 	reg &= ~(APPLE_PMGR_DEV_DISABLE | APPLE_PMGR_PS_RESET |
@@ -115,7 +115,7 @@ static int apple_pmgr_ps_set(struct generic_pm_domain *genpd, u32 pstate, bool a
 
 	if (ret < 0)
 		dev_err(ps->dev, "PS %s: Failed to reach power state 0x%x (now: 0x%x)\n",
-			genpd->name, pstate, reg);
+			genpd->name, pstate, cur);
 
 	if (auto_enable) {
 		/* Not all devices implement this; this is a no-op where not implemented. */
