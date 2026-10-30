@@ -2154,7 +2154,7 @@ static void brcmf_set_join_pref(struct brcmf_if *ifp,
 	join_pref_params[i].rssi_gain = 0;
 	join_pref_params[i].band = 0;
 	err = brcmf_fil_iovar_data_set(ifp, "join_pref", join_pref_params,
-				       sizeof(join_pref_params));
+				       (i + 1) * sizeof(join_pref_params[0]));
 	if (err)
 		bphy_err(drvr, "Set join_pref error (%d)\n", err);
 }
