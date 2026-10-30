@@ -1574,6 +1574,8 @@ static void macaudio_slk_unlock(struct snd_kcontrol *kcontrol)
 	guard(mutex)(&ma->volume_lock_mutex);
 	ma->speaker_lock_owner = NULL;
 	ma->speaker_lock_timeout = 0;
+	ma->speaker_lock_remain = 0;
+	cancel_delayed_work(&ma->lock_timeout_work);
 	macaudio_vlimit_update(ma);
 }
 
