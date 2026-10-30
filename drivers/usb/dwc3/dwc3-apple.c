@@ -533,9 +533,13 @@ static void dwc3_apple_remove(struct platform_device *pdev)
 	struct dwc3 *dwc = platform_get_drvdata(pdev);
 	struct dwc3_apple *appledwc = to_dwc3_apple(dwc);
 
-	guard(mutex)(&appledwc->lock);
-
+	/*
+	 * Unregister first and without our lock: this waits for a running role switch, which takes
+	 * our lock, and afterwards none can start.
+	 */
 	usb_role_switch_unregister(appledwc->role_sw);
+
+	guard(mutex)(&appledwc->lock);
 
 	/*
 	 * dwc3_apple_exit() checks the state itself: it exits host or gadget mode and the core if
