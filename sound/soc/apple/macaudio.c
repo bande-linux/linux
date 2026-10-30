@@ -233,6 +233,9 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 	int ret, max;
 	const char *name = volume_control_names[ma->cfg->amp];
 
+	lockdep_assert_held(&ma->card.snd_card->controls_rwsem);
+	lockdep_assert_held(&ma->volume_lock_mutex);
+
 	if (!name) {
 		WARN_ON_ONCE(1);
 		return;
@@ -274,6 +277,9 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 	bool unlock = true;
 	struct snd_kcontrol *kctl;
 	const char *reason;
+
+	lockdep_assert_held(&ma->card.snd_card->controls_rwsem);
+	lockdep_assert_held(&ma->volume_lock_mutex);
 
 	/* Do nothing if there is no safety configured */
 	if (!ma->has_safety)
@@ -322,6 +328,7 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 static void macaudio_vlimit_enable_timeout(struct macaudio_snd_data *ma)
 {
+	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
 	mutex_lock(&ma->volume_lock_mutex);
 
 	if (ma->speaker_lock_timeout_enabled) {
@@ -346,6 +353,7 @@ static void macaudio_vlimit_disable_timeout(struct macaudio_snd_data *ma)
 {
 	ktime_t now;
 
+	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
 	mutex_lock(&ma->volume_lock_mutex);
 
 	if (!ma->speaker_lock_timeout_enabled) {
@@ -377,6 +385,7 @@ static void macaudio_vlimit_timeout_work(struct work_struct *wrk)
         struct macaudio_snd_data *ma = container_of(to_delayed_work(wrk),
 						    struct macaudio_snd_data, lock_timeout_work);
 
+	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
 	mutex_lock(&ma->volume_lock_mutex);
 
 	ma->speaker_lock_remain = 0;
@@ -1209,9 +1218,9 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 		ma->speaker_lock_kctl = snd_soc_card_get_kcontrol(card,
 								  "Speaker Volume Unlock");
 
-		mutex_lock(&ma->volume_lock_mutex);
+		guard(rwsem_read)(&card->snd_card->controls_rwsem);
+		guard(mutex)(&ma->volume_lock_mutex);
 		macaudio_vlimit_unlock(ma, false);
-		mutex_unlock(&ma->volume_lock_mutex);
 	}
 
 	return 0;
