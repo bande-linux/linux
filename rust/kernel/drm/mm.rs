@@ -38,6 +38,19 @@ impl<T> AllocInner<T> for () {}
 /// The `drm_mm` struct is valid and initialized.
 struct MmInner<A: AllocInner<T>, T>(Opaque<bindings::drm_mm>, A, PhantomData<T>);
 
+impl<A: AllocInner<T>, T> MmInner<A, T> {
+    /// Returns a mutable reference to the user allocator state.
+    ///
+    /// `MmInner` is `!Unpin` because the `drm_mm` it wraps is referenced by its nodes, but the
+    /// user state is not structurally pinned.
+    fn alloc_inner(self: Pin<&mut Self>) -> &mut A {
+        // SAFETY: Only the `drm_mm` field is structurally pinned. The user state `A` is never
+        // pinned, nothing relies on its address, and the returned reference cannot be used to
+        // move the `drm_mm`.
+        unsafe { &mut self.get_unchecked_mut().1 }
+    }
+}
+
 /// Represents a single allocated node in the MM allocator
 pub struct NodeData<A: AllocInner<T>, T> {
     node: bindings::drm_mm_node,
@@ -93,7 +106,7 @@ impl<A: AllocInner<T>, T> InnerRef<A, T> {
     /// Operate on the user `AllocInner<T>` implementation, taking the lock.
     pub fn with<RetVal>(&self, cb: impl FnOnce(&mut A) -> RetVal) -> RetVal {
         let mut l = self.0.lock();
-        cb(&mut l.1)
+        cb(l.as_mut().alloc_inner())
     }
 }
 
@@ -116,7 +129,7 @@ impl<A: AllocInner<T>, T> NodeData<A, T> {
     /// Operate on the user `AllocInner<T>` implementation associated with this node's allocator.
     pub fn with_inner<RetVal>(&self, cb: impl FnOnce(&mut A) -> RetVal) -> RetVal {
         let mut l = self.mm.lock();
-        cb(&mut l.1)
+        cb(l.as_mut().alloc_inner())
     }
 
     /// Return a clonable, detached reference to the allocator inner data.
@@ -145,9 +158,12 @@ impl<A: AllocInner<T>, T> Drop for NodeData<A, T> {
             let mut guard = self.mm.lock();
 
             // Inform the user allocator that a node is being dropped.
-            guard
-                .1
-                .drop_object(self.start(), self.size(), self.color(), &mut self.inner);
+            guard.as_mut().alloc_inner().drop_object(
+                self.start(),
+                self.size(),
+                self.color(),
+                &mut self.inner,
+            );
             // SAFETY: The MM lock is still taken, so we can safely remove the node.
             unsafe { bindings::drm_mm_remove_node(&mut self.node) };
         }
@@ -292,7 +308,7 @@ impl<A: AllocInner<T>, T> Allocator<A, T> {
     /// Operate on the inner user type `A`, taking the allocator lock
     pub fn with_inner<RetVal>(&self, cb: impl FnOnce(&mut A) -> RetVal) -> RetVal {
         let mut guard = self.mm.lock();
-        cb(&mut guard.1)
+        cb(guard.as_mut().alloc_inner())
     }
 }
 
