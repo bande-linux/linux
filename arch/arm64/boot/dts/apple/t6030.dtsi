@@ -696,7 +696,7 @@
 			status = "disabled";
 		};
 
-		avd: avd@30a000000 {
+		avd: avd@30b080000 {
 			compatible = "apple,t6030-avd", "apple,t8122-avd";
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 788 IRQ_TYPE_LEVEL_HIGH>,
@@ -1315,7 +1315,7 @@
 			status = "disabled";
 		};
 
-		mtp_dockchannel: fifo@37ab30000 {
+		mtp_dockchannel: fifo@37ab14000 {
 			compatible = "apple,t6030-dockchannel", "apple,dockchannel";
 			reg = <0x3 0x7ab14000 0x0 0x4000>;
 			reg-names = "irq";
