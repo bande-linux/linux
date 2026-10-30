@@ -871,16 +871,17 @@ s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 	if (fw_abort) {
 		u32 len;
 		void *data = drvr->scan_param_handler.get_struct_for_request(cfg, &len, NULL);
-		if (!data){
-			bphy_err(drvr, "Scan abort failed to prepare abort struct\n");
-			return 0;
-		}
+
 		/* Do a scan abort to stop the driver's scan engine */
 		brcmf_dbg(SCAN, "ABORT scan in firmware\n");
-		err = brcmf_fil_cmd_data_set(ifp, BRCMF_C_SCAN, data, len);
+		if (data)
+			err = brcmf_fil_cmd_data_set(ifp, BRCMF_C_SCAN, data,
+						     len);
+		else
+			err = -ENOMEM;
 		kfree(data);
 		if (err)
-			bphy_err(drvr, "Scan abort failed\n");
+			bphy_err(drvr, "Scan abort failed (%d)\n", err);
 	}
 
 	brcmf_scan_config_mpc(ifp, 1);
