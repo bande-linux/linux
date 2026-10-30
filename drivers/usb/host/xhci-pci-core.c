@@ -571,12 +571,12 @@ static int xhci_pci_setup(struct usb_hcd *hcd)
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
 	int			retval;
 	u8			sbrn;
-	struct xhci_driver_data *driver_data;
+	const struct xhci_driver_data *driver_data;
 	const struct pci_device_id *id;
 
 	id = pci_match_id(to_pci_driver(pdev->dev.driver)->id_table, pdev);
 	if (id && id->driver_data && usb_hcd_is_primary_hcd(hcd)) {
-		driver_data = (struct xhci_driver_data *)id->driver_data;
+		driver_data = (const struct xhci_driver_data *)id->driver_data;
 		if (driver_data->quirks & XHCI_ASMEDIA_FW_QUIRK) {
 			retval = asmedia_xhci_check_request_fw(pdev, id);
 			if (retval < 0)
@@ -974,7 +974,7 @@ static const struct xhci_driver_data asmedia_data = {
 
 /* PCI driver selection metadata; PCI hotplugging uses this */
 static const struct pci_device_id pci_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_ASMEDIA, 0x2142),
+	{ PCI_DEVICE(PCI_VENDOR_ID_ASMEDIA, PCI_DEVICE_ID_ASMEDIA_2142_XHCI),
 		.driver_data = (unsigned long)&asmedia_data,
 	},
 	/* handle any USB 3.0 xHCI controller */

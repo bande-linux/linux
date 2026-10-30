@@ -4,17 +4,14 @@
  * Copyright (C) The Asahi Linux Contributors
  */
 
-#include <linux/acpi.h>
 #include <linux/bitfield.h>
 #include <linux/firmware.h>
 #include <linux/pci.h>
 #include <linux/iopoll.h>
 #include <linux/sizes.h>
-#include <linux/slab.h>
 #include <linux/unaligned.h>
 
 #include "xhci.h"
-#include "xhci-trace.h"
 #include "xhci-pci.h"
 
 /* Configuration space registers */
@@ -191,7 +188,8 @@ static int asmedia_wait_reset(struct pci_dev *pdev)
 	return ret;
 }
 
-static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val) {
+static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val)
+{
 	void __iomem *regs = hcd->regs;
 	u8 status;
 	int ret;
@@ -222,7 +220,8 @@ static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val) {
 	return 0;
 }
 
-static int asmedia_write_reg(struct usb_hcd *hcd, u16 addr, u8 data, bool wait) {
+static int asmedia_write_reg(struct usb_hcd *hcd, u16 addr, u8 data, bool wait)
+{
 	void __iomem *regs = hcd->regs;
 	u8 status, val;
 	int ret, err;
@@ -379,8 +378,8 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 int asmedia_xhci_check_request_fw(struct pci_dev *pdev,
 				  const struct pci_device_id *id)
 {
-	struct xhci_driver_data *driver_data =
-		(struct xhci_driver_data *)id->driver_data;
+	const struct xhci_driver_data *driver_data =
+		(const struct xhci_driver_data *)id->driver_data;
 	const char *fw_name = driver_data->firmware;
 	const struct firmware *fw;
 	int ret;
@@ -392,9 +391,7 @@ int asmedia_xhci_check_request_fw(struct pci_dev *pdev,
 	else if (ret == 1)
 		return 0;
 
-	pci_dev_get(pdev);
 	ret = request_firmware(&fw, fw_name, &pdev->dev);
-	pci_dev_put(pdev);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not load firmware %s: %d\n",
 			fw_name, ret);
