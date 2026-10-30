@@ -3225,7 +3225,6 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 	struct cfg80211_bss *bss;
 	enum nl80211_band band;
 	struct brcmu_chan ch;
-	u16 chanspec;
 	u16 channel;
 	u32 freq;
 	u16 notify_capability;
@@ -3239,17 +3238,16 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 		return -EINVAL;
 	}
 
-	chanspec = le16_to_cpu(bi->chanspec);
-	if (!bi->ctl_ch) {
-		ch.chspec = chanspec;
-		cfg->d11inf.decchspec(&ch);
+	/* Decode with the firmware's chanspec encoding (D11N or D11AC) */
+	ch.chspec = le16_to_cpu(bi->chanspec);
+	cfg->d11inf.decchspec(&ch);
+	if (!bi->ctl_ch)
 		bi->ctl_ch = ch.control_ch_num;
-	}
 	channel = bi->ctl_ch;
 
-	if (CHSPEC_IS6G(chanspec))
+	if (ch.band == BRCMU_CHAN_BAND_6G)
 		band = NL80211_BAND_6GHZ;
-	else if (CHSPEC_IS5G(chanspec))
+	else if (ch.band == BRCMU_CHAN_BAND_5G)
 		band = NL80211_BAND_5GHZ;
 	else
 		band = NL80211_BAND_2GHZ;
@@ -3794,8 +3792,8 @@ static s32 brcmf_notify_sched_scan_results(struct brcmf_if *ifp,
 		u8 ssid[IEEE80211_MAX_SSID_LEN];
 		u8 ssid_len;
 
-		drvr->pno_handler.get_result_info(data, i, &ssid, &ssid_len,
-						 &channel, &band);
+		drvr->pno_handler.get_result_info(&cfg->d11inf, data, i, &ssid,
+						 &ssid_len, &channel, &band);
 		brcmf_dbg(SCAN, "SSID:%.32s Channel:%d Band:%d\n", ssid,
 			  channel, band);
 		bucket_map |= drvr->pno_handler.get_bucket_map(data, i, cfg->pno);
@@ -3940,8 +3938,8 @@ static s32 brcmf_wowl_nd_results(struct brcmf_if *ifp,
 		return -EINVAL;
 	}
 
-	drvr->pno_handler.get_result_info(data, 0, &ssid, &ssid_len, &channel,
-					 &band);
+	drvr->pno_handler.get_result_info(&cfg->d11inf, data, 0, &ssid,
+					 &ssid_len, &channel, &band);
 	memcpy(cfg->wowl.nd->ssid.ssid, ssid, ssid_len);
 	cfg->wowl.nd->ssid.ssid_len = ssid_len;
 	cfg->wowl.nd->n_channels = 1;
