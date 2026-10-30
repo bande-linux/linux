@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 
@@ -82,6 +83,8 @@ enum dwc3_apple_state {
  * @mmio_resource: Resource to be passed to dwc3_core_probe
  * @apple_regs: Apple-specific DWC3 registers
  * @reset: Reset control
+ * @usb2_phy: USB2 PHY, which must be set to the target mode before dwc3_core_probe() has
+ *	      obtained its own reference
  * @role_sw: USB role switch
  * @lock: Mutex for synchronizing access
  * @state: Current state of the controller, see documentation for the enum for details
@@ -94,6 +97,7 @@ struct dwc3_apple {
 	void __iomem *apple_regs;
 
 	struct reset_control *reset;
+	struct phy *usb2_phy;
 	struct usb_role_switch *role_sw;
 
 	struct mutex lock;
@@ -233,10 +237,10 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 	 */
 	switch (state) {
 	case DWC3_APPLE_HOST:
-		phy_set_mode(appledwc->dwc.usb2_generic_phy[0], PHY_MODE_USB_HOST);
+		phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_HOST);
 		break;
 	case DWC3_APPLE_DEVICE:
-		phy_set_mode(appledwc->dwc.usb2_generic_phy[0], PHY_MODE_USB_DEVICE);
+		phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_DEVICE);
 		break;
 	default:
 		/* Unreachable unless there's a bug in this driver */
@@ -466,6 +470,14 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 	if (IS_ERR(appledwc->apple_regs))
 		return dev_err_probe(dev, PTR_ERR(appledwc->apple_regs),
 				     "Failed to map Apple-specific MMIO\n");
+
+	/*
+	 * dwc3 only gets its PHY references in dwc3_core_probe(), which runs on the first cable
+	 * connection, after the USB2 PHY mode must already be set. Keep our own reference.
+	 */
+	appledwc->usb2_phy = devm_phy_optional_get(dev, "usb2-phy");
+	if (IS_ERR(appledwc->usb2_phy))
+		return dev_err_probe(dev, PTR_ERR(appledwc->usb2_phy), "Failed to get USB2 PHY\n");
 
 	/*
 	 * On this platform, DWC3 can only be brought up after parts of the PHY have been
