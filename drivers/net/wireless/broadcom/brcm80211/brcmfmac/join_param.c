@@ -246,7 +246,7 @@ static void *brcmf_get_join_from_ext_join_v1(void *ext_join, u32 *struct_size)
 	struct brcmf_join_params_v1 *join_params;
 	u32 join_params_size =
 		struct_size(join_params, params_le.chanspec_list, chanspec_num);
-	u32 assoc_size = struct_size_t(struct brcmf_assoc_params_le,
+	u32 assoc_size = struct_size_t(struct brcmf_assoc_params_v1_le,
 				       chanspec_list, chanspec_num);
 
 	*struct_size = join_params_size;
