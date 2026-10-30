@@ -7,6 +7,8 @@
 #include <linux/kconfig.h>
 #include <linux/of_platform.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 #include <linux/soc/apple/rtkit.h>
 
@@ -1062,20 +1064,14 @@ static ssize_t service_call_write_file(struct file *file, const char __user *use
 			return -ENOMEM;
 	}
 
-	ret = copy_from_user(&call_info, user_buf, sizeof(call_info));
-	if (ret == sizeof(call_info))
+	if (copy_from_user(&call_info, user_buf, sizeof(call_info)))
 		return -EFAULT;
 	user_buf += sizeof(call_info);
 	count -= sizeof(call_info);
 
-	buf = kmalloc(count, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-	ret = copy_from_user(buf, user_buf, count);
-	if (ret == count) {
-		kfree(buf);
-		return -EFAULT;
-	}
+	buf = memdup_user(user_buf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	memset(srv->debugfs.scratch, 0, AFK_DEBUGFS_MAX_REPLY);
 	dma_mb();
@@ -1122,9 +1118,11 @@ static ssize_t service_raw_call_write_file(struct file *file, const char __user 
 			return -ENOMEM;
 	}
 
+	if (count > AFK_DEBUGFS_MAX_REPLY)
+		return -EINVAL;
+
 	memset(srv->debugfs.scratch, 0, AFK_DEBUGFS_MAX_REPLY);
-	ret = copy_from_user(srv->debugfs.scratch, user_buf, count);
-	if (ret == count)
+	if (copy_from_user(srv->debugfs.scratch, user_buf, count))
 		return -EFAULT;
 
 	ret = afk_send_command(srv, EPIC_SUBTYPE_STD_SERVICE, srv->debugfs.scratch, count,
