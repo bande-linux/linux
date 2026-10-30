@@ -137,7 +137,7 @@ struct macaudio_snd_data {
 	unsigned int speaker_volume_count;
 	struct snd_kcontrol *speaker_lock_kctl;
 	struct snd_ctl_file *speaker_lock_owner;
-	u64 bes_active;
+	unsigned long bes_active;
 	bool speaker_lock_timeout_enabled;
 	ktime_t speaker_lock_timeout;
 	ktime_t speaker_lock_remain;
@@ -545,7 +545,7 @@ static void macaudio_vlimit_update_work(struct work_struct *wrk)
         struct macaudio_snd_data *ma = container_of(wrk,
 						    struct macaudio_snd_data, lock_update_work);
 
-	if (ma->bes_active)
+	if (READ_ONCE(ma->bes_active))
 		macaudio_vlimit_enable_timeout(ma);
 	else
 		macaudio_vlimit_disable_timeout(ma);
@@ -1099,12 +1099,12 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 			/* The volume cap could not be written: don't play */
 			if (READ_ONCE(ma->speaker_volume_lock_failed))
 				return -EIO;
-			ma->bes_active |= BIT(rtd->dai_link->id);
+			set_bit(rtd->dai_link->id, &ma->bes_active);
 			break;
 		case SNDRV_PCM_TRIGGER_SUSPEND:
 		case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		case SNDRV_PCM_TRIGGER_STOP:
-			ma->bes_active &= ~BIT(rtd->dai_link->id);
+			clear_bit(rtd->dai_link->id, &ma->bes_active);
 			break;
 		default:
 			return -EINVAL;
