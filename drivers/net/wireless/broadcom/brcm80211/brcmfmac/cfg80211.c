@@ -4156,6 +4156,13 @@ static int brcmf_keepalive_start(struct brcmf_if *ifp, unsigned int interval)
 	return ret;
 }
 
+static void brcmf_cfg80211_set_wakeup(struct wiphy *wiphy, bool enabled)
+{
+	struct brcmf_cfg80211_info *cfg = wiphy_to_cfg(wiphy);
+
+	brcmf_bus_set_wakeup(cfg->pub->bus_if, enabled);
+}
+
 static s32 brcmf_cfg80211_suspend(struct wiphy *wiphy,
 				  struct cfg80211_wowlan *wowl)
 {
@@ -5946,6 +5953,7 @@ static struct cfg80211_ops brcmf_cfg80211_ops = {
 	.disconnect = brcmf_cfg80211_disconnect,
 	.suspend = brcmf_cfg80211_suspend,
 	.resume = brcmf_cfg80211_resume,
+	.set_wakeup = brcmf_cfg80211_set_wakeup,
 	.set_pmksa = brcmf_cfg80211_set_pmksa,
 	.del_pmksa = brcmf_cfg80211_del_pmksa,
 	.flush_pmksa = brcmf_cfg80211_flush_pmksa,
