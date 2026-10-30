@@ -77,7 +77,8 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 		}
 		break;
 	default:
-		dev_warn(smcin->dev, "Unknown SMC button event: %04lx\n", event & 0xffff);
+		dev_warn_ratelimited(smcin->dev, "Unknown SMC button event: %04lx\n",
+				     event & 0xffff);
 	}
 }
 
