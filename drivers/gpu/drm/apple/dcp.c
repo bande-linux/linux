@@ -1031,6 +1031,16 @@ static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 	return DCP_FIRMWARE_UNKNOWN;
 }
 
+/* Clearing RUN halts the coprocessor's CPU (m1n1 asc_cpu_stop()) */
+static void dcp_stop_coproc(struct apple_dcp *dcp)
+{
+	u32 cpu_ctrl;
+
+	cpu_ctrl = readl_relaxed(dcp->coproc_reg + APPLE_DCP_COPROC_CPU_CONTROL);
+	writel_relaxed(cpu_ctrl & ~APPLE_DCP_COPROC_CPU_CONTROL_RUN,
+		       dcp->coproc_reg + APPLE_DCP_COPROC_CPU_CONTROL);
+}
+
 static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 {
 	struct device_node *panel_np;
@@ -1135,16 +1145,22 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	writel_relaxed(cpu_ctrl | APPLE_DCP_COPROC_CPU_CONTROL_RUN,
 		       dcp->coproc_reg + APPLE_DCP_COPROC_CPU_CONTROL);
 
-	dcp->rtk = devm_apple_rtkit_init(dev, dcp, "mbox", 0, &rtkit_ops);
-	if (IS_ERR(dcp->rtk))
-		return dev_err_probe(dev, PTR_ERR(dcp->rtk),
-				     "Failed to initialize RTKit\n");
+	dcp->rtk = apple_rtkit_init(dev, dcp, "mbox", 0, &rtkit_ops);
+	if (IS_ERR(dcp->rtk)) {
+		ret = PTR_ERR(dcp->rtk);
+		dcp->rtk = NULL;
+		dcp_stop_coproc(dcp);
+		return dev_err_probe(dev, ret, "Failed to initialize RTKit\n");
+	}
 
 	ret = apple_rtkit_wake(dcp->rtk);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "Failed to boot RTKit: %d\n", ret);
-	return ret;
+	if (ret) {
+		dcp_stop_coproc(dcp);
+		apple_rtkit_free(dcp->rtk);
+		dcp->rtk = NULL;
+		return dev_err_probe(dev, ret, "Failed to boot RTKit\n");
+	}
+	return 0;
 }
 
 /*
@@ -1163,6 +1179,11 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		disable_irq(dcp->hdmi_hpd_irq);
 
 	typec_mux_put(dcp->typec_mux);
+
+	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
+		cancel_work_sync(&dcp->bl_register_wq);
+		cancel_work_sync(&dcp->bl_update_wq);
+	}
 
 	if (dcp->avep) {
 		av_service_disconnect(dcp);
@@ -1193,14 +1214,21 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 	if (dcp->shmem)
 		iomfb_shutdown(dcp);
 
-	/* The bootloader hands the DCP over quiesced (m1n1 display_shutdown()) */
-	if (!dcp->crashed && apple_rtkit_is_running(dcp->rtk)) {
-		ret = apple_rtkit_quiesce(dcp->rtk);
-		if (ret)
-			dev_err(dev, "failed to quiesce RTKit: %d\n", ret);
+	if (dcp->rtk) {
+		/* The bootloader hands the DCP over quiesced (m1n1 display_shutdown()) */
+		ret = dcp->crashed ? -EIO : 0;
+		if (!ret && apple_rtkit_is_running(dcp->rtk))
+			ret = apple_rtkit_quiesce(dcp->rtk);
+		if (ret) {
+			dev_err(dev, "DCP not quiesced (%d), halting it\n", ret);
+			dcp_stop_coproc(dcp);
+		}
+		apple_rtkit_free(dcp->rtk);
+		dcp->rtk = NULL;
 	}
-	devm_apple_rtkit_free(dev, dcp->rtk);
-	dcp->rtk = NULL;
+	cancel_work_sync(&dcp->vblank_wq);
+
+	dcp_release_memdescs(dcp);
 
 	if (dcp->shmem) {
 		dma_free_coherent(dev, DCP_SHMEM_SIZE, dcp->shmem, dcp->shmem_iova);
@@ -1212,12 +1240,6 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		of_platform_device_destroy(&dcp->piodma->dev, NULL);
 		dcp->piodma = NULL;
 	}
-
-	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
-		cancel_work_sync(&dcp->bl_register_wq);
-		cancel_work_sync(&dcp->bl_update_wq);
-	}
-	cancel_work_sync(&dcp->vblank_wq);
 
 	devm_clk_put(dev, dcp->clk);
 	dcp->clk = NULL;

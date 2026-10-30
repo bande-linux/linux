@@ -548,11 +548,38 @@ int iomfb_start_rtkit(struct apple_dcp *dcp)
 	return 0;
 }
 
+void dcp_release_memdesc(struct apple_dcp *dcp,
+			 struct dcp_mem_descriptor *memdesc)
+{
+	if (memdesc->buf) {
+		sg_free_table(&memdesc->map);
+		dma_free_coherent(dcp->dev, ALIGN(memdesc->size, SZ_16K),
+				  memdesc->buf, memdesc->dva);
+	} else if (memdesc->reg) {
+		dma_unmap_resource(dcp->dev, memdesc->dva, memdesc->size,
+				   DMA_BIDIRECTIONAL, 0);
+	}
+	memset(memdesc, 0, sizeof(*memdesc));
+}
+
+void dcp_release_memdescs(struct apple_dcp *dcp)
+{
+	unsigned int id = 1;
+
+	for_each_set_bit_from(id, dcp->memdesc_map, DCP_MAX_MAPPINGS) {
+		dcp_release_memdesc(dcp, &dcp->memdesc[id]);
+		clear_bit(id, dcp->memdesc_map);
+	}
+}
+
 void iomfb_shutdown(struct apple_dcp *dcp)
 {
 	/* We're going down */
 	dcp->active = false;
 	dcp->valid_mode = false;
+
+	if (dcp->crashed)
+		return;
 
 	switch (dcp->fw_compat) {
 	case DCP_FIRMWARE_V_12_3:
