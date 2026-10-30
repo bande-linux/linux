@@ -445,14 +445,23 @@ static void macaudio_vlimit_timeout_work(struct work_struct *wrk)
 {
         struct macaudio_snd_data *ma = container_of(to_delayed_work(wrk),
 						    struct macaudio_snd_data, lock_timeout_work);
+	ktime_t left;
 
 	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
-	mutex_lock(&ma->volume_lock_mutex);
+	guard(mutex)(&ma->volume_lock_mutex);
+
+	if (!ma->speaker_lock_timeout_enabled)
+		return;
+
+	left = ktime_sub(ma->speaker_lock_timeout, ktime_get());
+	if (ktime_to_us(left) > 0) {
+		schedule_delayed_work(&ma->lock_timeout_work,
+				      usecs_to_jiffies(ktime_to_us(left)));
+		return;
+	}
 
 	ma->speaker_lock_remain = 0;
 	macaudio_vlimit_update(ma);
-
-	mutex_unlock(&ma->volume_lock_mutex);
 }
 
 static void macaudio_vlimit_update_work(struct work_struct *wrk)
