@@ -217,7 +217,7 @@
 
 / {
 	sound: sound {
-		compatible = "apple,j314-macaudio", "apple,j504-macaudio", "apple,macaudio";
+		compatible = "apple,j504-macaudio", "apple,j314-macaudio", "apple,macaudio";
 		model = "MacBook Pro J504";
 
 		dai-link@0 {
