@@ -164,6 +164,7 @@ struct tipd_data {
 	bool (*read_power_status)(struct tps6598x *tps);
 	int (*reset)(struct tps6598x *tps);
 	int (*connect)(struct tps6598x *tps, u32 status);
+	const struct typec_operations *typec_ops;
 };
 
 struct tps6598x {
@@ -474,31 +475,39 @@ static int tps6598x_exec_cmd(struct tps6598x *tps, const char *cmd,
 				     out_len, out_data, 1000, 0);
 }
 
-static int tps6598x_dr_set(struct typec_port *port, enum typec_data_role role)
+static int tps6598x_dr_swap(struct tps6598x *tps, enum typec_data_role role, u32 *status)
 {
 	const char *cmd = (role == TYPEC_DEVICE) ? "SWUF" : "SWDF";
+	int ret;
+
+	lockdep_assert_held(&tps->lock);
+
+	ret = tps6598x_exec_cmd(tps, cmd, 0, NULL, 0, NULL);
+	if (ret)
+		return ret;
+
+	ret = tps6598x_read32(tps, TPS_REG_STATUS, status);
+	if (ret)
+		return ret;
+
+	if (role != TPS_STATUS_TO_TYPEC_DATAROLE(*status))
+		return -EPROTO;
+
+	return 0;
+}
+
+static int tps6598x_dr_set(struct typec_port *port, enum typec_data_role role)
+{
 	struct tps6598x *tps = typec_get_drvdata(port);
 	u32 status;
 	int ret;
 
 	mutex_lock(&tps->lock);
 
-	ret = tps6598x_exec_cmd(tps, cmd, 0, NULL, 0, NULL);
-	if (ret)
-		goto out_unlock;
+	ret = tps6598x_dr_swap(tps, role, &status);
+	if (!ret)
+		tps6598x_set_data_role(tps, role, true);
 
-	ret = tps6598x_read32(tps, TPS_REG_STATUS, &status);
-	if (ret)
-		goto out_unlock;
-
-	if (role != TPS_STATUS_TO_TYPEC_DATAROLE(status)) {
-		ret = -EPROTO;
-		goto out_unlock;
-	}
-
-	tps6598x_set_data_role(tps, role, true);
-
-out_unlock:
 	mutex_unlock(&tps->lock);
 
 	return ret;
@@ -961,6 +970,37 @@ static int cd321x_connect(struct tps6598x *tps, u32 status)
 	return 0;
 }
 
+static int cd321x_dr_set(struct typec_port *port, enum typec_data_role role)
+{
+	struct tps6598x *tps = typec_get_drvdata(port);
+	u32 status;
+	int ret;
+
+	guard(mutex)(&tps->lock);
+
+	ret = tps6598x_dr_swap(tps, role, &status);
+	if (ret)
+		return ret;
+
+	typec_set_data_role(tps->port, role);
+
+	/*
+	 * Don't switch the USB role here: cd321x_update_work() stops the old
+	 * role and sets the mux up again before it starts the new one. If the
+	 * data status cannot be read, the work still runs on the new status;
+	 * the data status interrupt corrects it.
+	 */
+	if (!cd321x_read_data_status(tps))
+		dev_warn(tps->dev, "failed to read data status after role swap\n");
+
+	return cd321x_connect(tps, status);
+}
+
+static const struct typec_operations cd321x_typec_ops = {
+	.dr_set = cd321x_dr_set,
+	.pr_set = tps6598x_pr_set,
+};
+
 static irqreturn_t cd321x_interrupt(int irq, void *data)
 {
 	struct tps6598x *tps = data;
@@ -1292,7 +1332,7 @@ tps6598x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 	typec_cap.pd_revision = 0x200;
 	typec_cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
 	typec_cap.driver_data = tps;
-	typec_cap.ops = &tps6598x_ops;
+	typec_cap.ops = tps->data->typec_ops ?: &tps6598x_ops;
 	typec_cap.fwnode = fwnode;
 	typec_cap.no_mode_control = tps->data->no_mode_control;
 
@@ -1828,7 +1868,8 @@ static void cd321x_remove(struct tps6598x *tps)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
-	cancel_delayed_work_sync(&cd321x->update_work);
+	/* Also keeps cd321x_dr_set() from queueing it again */
+	disable_delayed_work_sync(&cd321x->update_work);
 
 	/*
 	 * Stop the USB controller before tps6598x_disconnect() sets the mux to
@@ -2091,6 +2132,7 @@ static const struct tipd_data cd321x_data = {
 	.reset = cd321x_reset,
 	.switch_power_state = cd321x_switch_power_state,
 	.connect = cd321x_connect,
+	.typec_ops = &cd321x_typec_ops,
 };
 
 static const struct tipd_data tps6598x_data = {
