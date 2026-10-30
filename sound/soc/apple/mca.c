@@ -53,6 +53,8 @@
 #define SYNCGEN_STATUS_EN	BIT(0)
 #define REG_SYNCGEN_MCLK_SEL	0x104
 #define SYNCGEN_MCLK_SEL	GENMASK(3, 0)
+/* 1 + cluster number selects a cluster MCLK, 7 + port number a port clock input */
+#define SYNCGEN_MCLK_SEL_PORT(port)	((port) + 7)
 #define REG_SYNCGEN_HI_PERIOD	0x108
 #define REG_SYNCGEN_LO_PERIOD	0x10c
 
@@ -368,7 +370,7 @@ static int mca_fe_prepare(struct snd_pcm_substream *substream,
 
 	/* Turn on the cluster power domain if not already in use */
 	if (!cl->syncgen_in_use) {
-		int port = ffs(mca_fe_get_portmask(substream));
+		int port = ffs(mca_fe_get_portmask(substream)) - 1;
 
 		WARN_ON(cl->pd_link);
 		cl->pd_link = device_link_add(mca->dev, cl->pd_dev,
@@ -380,7 +382,8 @@ static int mca_fe_prepare(struct snd_pcm_substream *substream,
 			return -EINVAL;
 		}
 
-		mca_modify(cl, REG_SYNCGEN_MCLK_SEL, SYNCGEN_MCLK_SEL, BIT(port));
+		mca_modify(cl, REG_SYNCGEN_MCLK_SEL, SYNCGEN_MCLK_SEL,
+			   SYNCGEN_MCLK_SEL_PORT(port));
 		mca_modify(cl, REG_SYNCGEN_STATUS, SYNCGEN_STATUS_EN,
 			   SYNCGEN_STATUS_EN);
 	}
