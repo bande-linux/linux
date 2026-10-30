@@ -7510,7 +7510,7 @@ static int brcmf_setup_wiphybands(struct brcmf_cfg80211_info *cfg)
 	u32 rxstreams = 0;
 	u32 txbf_bfe_cap = 0;
 	u32 txbf_bfr_cap = 0;
-	u8 he_enable;
+	u8 he_enable = 0;
 	struct brcmf_he_defcap he_cap;
 	u32 ldpc_cap = 0;
 	u32 stbc_rx = 0;
