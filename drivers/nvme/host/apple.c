@@ -1706,6 +1706,7 @@ static void apple_nvme_remove(struct platform_device *pdev)
 
 	nvme_change_ctrl_state(&anv->ctrl, NVME_CTRL_DELETING);
 	flush_delayed_work(&anv->flush_dwork);
+	disable_delayed_work_sync(&anv->flush_dwork);
 	flush_work(&anv->ctrl.reset_work);
 	nvme_stop_ctrl(&anv->ctrl);
 	nvme_remove_namespaces(&anv->ctrl);
