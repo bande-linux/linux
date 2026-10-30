@@ -420,6 +420,13 @@ static const struct i2c_algorithm smbus_algorithm = {
 	.functionality = pasemi_smb_func,
 };
 
+void pasemi_i2c_reinit(struct pasemi_smbus *smbus)
+{
+	reg_write(smbus, REG_IMASK, 0);
+	pasemi_reset(smbus);
+}
+EXPORT_SYMBOL_GPL(pasemi_i2c_reinit);
+
 int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 {
 	int error;
@@ -438,9 +445,7 @@ int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 	if (smbus->hw_rev != PASEMI_HW_REV_PCI)
 		smbus->hw_rev = reg_read(smbus, REG_REV);
 
-	reg_write(smbus, REG_IMASK, 0);
-
-	pasemi_reset(smbus);
+	pasemi_i2c_reinit(smbus);
 
 	error = devm_i2c_add_adapter(smbus->dev, &smbus->adapter);
 	if (error)
