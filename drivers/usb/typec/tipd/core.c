@@ -386,6 +386,13 @@ static int tps6598x_connect(struct tps6598x *tps, u32 status)
 
 static void tps6598x_disconnect(struct tps6598x *tps, u32 status)
 {
+	/*
+	 * Stop the USB controller before the mux goes to safe mode: on some
+	 * platforms (Apple ATC PHY) safe mode powers the PHY off, which must
+	 * not happen under a running host or gadget controller.
+	 */
+	tps6598x_set_data_role(tps, TPS_STATUS_TO_TYPEC_DATAROLE(status), false);
+
 	if (!IS_ERR(tps->partner))
 		typec_unregister_partner(tps->partner);
 	tps->partner = NULL;
@@ -394,7 +401,6 @@ static void tps6598x_disconnect(struct tps6598x *tps, u32 status)
 	typec_set_vconn_role(tps->port, TPS_STATUS_TO_TYPEC_VCONN(status));
 	typec_set_orientation(tps->port, TYPEC_ORIENTATION_NONE);
 	typec_set_mode(tps->port, TYPEC_STATE_SAFE);
-	tps6598x_set_data_role(tps, TPS_STATUS_TO_TYPEC_DATAROLE(status), false);
 
 	power_supply_changed(tps->psy);
 }
