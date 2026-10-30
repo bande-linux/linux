@@ -460,8 +460,17 @@ out:
 
 static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 {
-	struct soc_mixer_control *mc = (struct soc_mixer_control *)kctl->private_value;
+	struct soc_mixer_control *mc;
 
+	/*
+	 * A wildcard pattern can match controls of any type; only volsw
+	 * controls carry a struct soc_mixer_control in private_value.
+	 */
+	if (kctl->info != snd_soc_info_volsw &&
+	    kctl->info != snd_soc_info_volsw_sx)
+		return -EINVAL;
+
+	mc = (struct soc_mixer_control *)kctl->private_value;
 	if (max <= 0 || max > mc->max - mc->min)
 		return -EINVAL;
 	mc->platform_max = max;
@@ -479,8 +488,8 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
  * verbatim, or a pattern starting with the wildcard '*') and sets
  * a platform volume limit on them.
  *
- * Return number of matching controls on success, else error. At least
- * one control needs to match the pattern.
+ * Return 0 on success, else error. At least one control needs to match
+ * the pattern.
  */
 int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 {
@@ -509,7 +518,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		return -EINVAL;
 	}
 
-	return hits;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
 
@@ -520,8 +529,8 @@ EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
  * @name: name pattern
  * @active: non-zero to activate, zero to deactivate
  *
- * Return number of matching controls on success, else error.
- * No controls need to match.
+ * Return number of matching controls on success, else error. At least
+ * one control needs to match the pattern.
  */
 int snd_soc_deactivate_kctl(struct snd_soc_card *card,
 	const char *name, int active)
@@ -591,7 +600,7 @@ static int soc_set_enum_kctl(struct snd_kcontrol *kctl, const char *strval)
  * @value: string value to set the controls to
  *
  * Return number of matching and set controls on success, else error.
- * No controls need to match.
+ * At least one control needs to match the pattern.
  */
 int snd_soc_set_enum_kctl(struct snd_soc_card *card,
 	const char *name, const char *value)
