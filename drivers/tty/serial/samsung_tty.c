@@ -1305,19 +1305,27 @@ static int __maybe_unused s3c24xx_serial_runtime_suspend(struct device *dev)
 
 	clk_disable_unprepare(ourport->clk);
 	return 0;
-};
+}
 
 static int __maybe_unused s3c24xx_serial_runtime_resume(struct device *dev)
 {
 	struct uart_port *port = dev_get_drvdata(dev);
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
+	int ret;
 
-	clk_prepare_enable(ourport->clk);
+	ret = clk_prepare_enable(ourport->clk);
+	if (ret)
+		return ret;
 
-	if (!IS_ERR(ourport->baudclk))
-		clk_prepare_enable(ourport->baudclk);
+	if (!IS_ERR(ourport->baudclk)) {
+		ret = clk_prepare_enable(ourport->baudclk);
+		if (ret) {
+			clk_disable_unprepare(ourport->clk);
+			return ret;
+		}
+	}
 	return 0;
-};
+}
 
 static void s3c24xx_serial_pm(struct uart_port *port, unsigned int level,
 			      unsigned int old)
@@ -1328,7 +1336,6 @@ static void s3c24xx_serial_pm(struct uart_port *port, unsigned int level,
 
 	switch (level) {
 	case UART_PM_STATE_OFF:
-		pm_runtime_mark_last_busy(port->dev);
 		pm_runtime_put_sync(port->dev);
 		break;
 
