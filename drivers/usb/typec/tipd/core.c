@@ -631,6 +631,20 @@ static bool tps6598x_read_power_status(struct tps6598x *tps)
 	return true;
 }
 
+static bool cd321x_read_power_status(struct tps6598x *tps)
+{
+	if (!tps6598x_read_power_status(tps))
+		return false;
+
+	if (TPS_POWER_STATUS_PWROPMODE(tps->pwr_status) == TYPEC_PWR_MODE_PD &&
+	    tps6598x_read_partner_identity(tps)) {
+		dev_err(tps->dev, "failed to read partner identity\n");
+		tps->partner_identity = (struct usb_pd_identity) {0};
+	}
+
+	return true;
+}
+
 /*
  * TPS66993 deprecated Power_Status register (0x3F). BC1.2 is not supported
  * and the remaining bits are redundant with STATUS register (0x1A).
@@ -934,16 +948,9 @@ static irqreturn_t cd321x_interrupt(int irq, void *data)
 	if (!tps6598x_read_status(tps, &status))
 		goto err_unlock;
 
-	if (event & APPLE_CD_REG_INT_POWER_STATUS_UPDATE) {
+	if (event & APPLE_CD_REG_INT_POWER_STATUS_UPDATE)
 		if (!tps->data->read_power_status(tps))
 			goto err_unlock;
-		if (TPS_POWER_STATUS_PWROPMODE(tps->pwr_status) == TYPEC_PWR_MODE_PD) {
-			if (tps6598x_read_partner_identity(tps)) {
-				dev_err(tps->dev, "failed to read partner identity\n");
-				tps->partner_identity = (struct usb_pd_identity) {0};
-			}
-		}
-	}
 
 	if (event & APPLE_CD_REG_INT_DATA_STATUS_UPDATE)
 		if (!tps->data->read_data_status(tps))
@@ -2033,7 +2040,7 @@ static const struct tipd_data cd321x_data = {
 	.trace_status = trace_tps6598x_status,
 	.init = cd321x_init,
 	.read_data_status = cd321x_read_data_status,
-	.read_power_status = tps6598x_read_power_status,
+	.read_power_status = cd321x_read_power_status,
 	.reset = cd321x_reset,
 	.switch_power_state = cd321x_switch_power_state,
 	.connect = cd321x_connect,
