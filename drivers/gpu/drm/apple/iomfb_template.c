@@ -810,11 +810,10 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	dcp_set_parameter_dcp(dcp, false, &param, dcp_on_set_power_state, cookie);
 }
 
-static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
+static void dcp_set_display(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	u32 handle;
 
-	dcp->client_open = true;
 	if (dcp->main_display) {
 		handle = 0;
 		dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
@@ -826,7 +825,13 @@ static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
 	}
 }
 
-void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
+static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	dcp->client_open = true;
+	dcp_set_display(dcp, out, cookie);
+}
+
+void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp, bool open_client)
 {
 	struct dcp_wait_cookie *cookie;
 	int ret;
@@ -841,10 +846,10 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 	/* increase refcount to ensure the receiver has a reference */
 	kref_get(&cookie->refcount);
 
-	if (dcp->client_open)
-		dcp_on_client_open(dcp, NULL, cookie);
-	else
+	if (open_client && !dcp->client_open)
 		dcp_first_client_open(dcp, false, dcp_on_client_open, cookie);
+	else
+		dcp_set_display(dcp, NULL, cookie);
 	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(10000));
 
 	if (ret == 0) {
@@ -1001,7 +1006,6 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 
 static void last_client_closed_sleep(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp->client_open = false;
 	struct dcp_set_power_state_req power_req = {
 		.unklong = 0,
 	};

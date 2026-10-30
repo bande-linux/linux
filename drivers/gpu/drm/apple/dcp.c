@@ -433,8 +433,6 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 	return 0;
 }
 
-static void dcp_read_sink_modes(struct apple_dcp *dcp);
-
 int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
@@ -443,7 +441,7 @@ int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 
 	ret = dcp_dptx_connect(dcp, port);
 	if (!ret && !was_connected)
-		dcp_read_sink_modes(dcp);
+		schedule_work(&dcp->sink_modes_wq);
 
 	return ret;
 }
@@ -484,7 +482,7 @@ static irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
 
 	if (connected && !dcp->dptxport[0].connected &&
 	    !dcp_dptx_connect(dcp, 0))
-		dcp_read_sink_modes(dcp);
+		schedule_work(&dcp->sink_modes_wq);
 
 	return IRQ_HANDLED;
 }
@@ -610,10 +608,14 @@ static int dcp_enable_dp2hdmi_hpd(struct apple_dcp *dcp)
 		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
 		dev_info(dcp->dev, "%s: DP2HDMI HPD connected:%d\n", __func__, connected);
 
-		if (connected)
+		if (connected) {
 			dcp_dptx_connect(dcp, 0);
-		else
+		} else {
+			mutex_lock(&dcp->power_mutex);
 			_dcp_poweroff(dcp);
+			dcp->iomfb_on = false;
+			mutex_unlock(&dcp->power_mutex);
+		}
 	}
 
 	if (dcp->hdmi_hpd_irq)
@@ -665,17 +667,17 @@ static void __maybe_unused dcp_sleep(struct apple_dcp *dcp)
 	}
 }
 
-static void _dcp_poweron(struct apple_dcp *dcp)
+static void _dcp_poweron(struct apple_dcp *dcp, bool open_client)
 {
 	switch (dcp->fw_compat) {
 	case DCP_FIRMWARE_V_12_3:
-		iomfb_poweron_v12_3(dcp);
+		iomfb_poweron_v12_3(dcp, open_client);
 		break;
 	case DCP_FIRMWARE_V_13_5:
-		iomfb_poweron_v13_3(dcp);
+		iomfb_poweron_v13_3(dcp, open_client);
 		break;
 	case DCP_FIRMWARE_V_14_7:
-		iomfb_poweron_v14_7_0(dcp);
+		iomfb_poweron_v14_7_0(dcp, open_client);
 		break;
 	default:
 		WARN_ONCE(true, "Unexpected firmware version: %u\n", dcp->fw_compat);
@@ -683,35 +685,90 @@ static void _dcp_poweron(struct apple_dcp *dcp)
 	}
 }
 
+/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
 #define DCP_TIMINGS_TIMEOUT msecs_to_jiffies(3000)
+/* HDMI monitors drop HPD for about 0.6 s when they wake (j473 trace) */
+#define DCP_RELEASE_DELAY msecs_to_jiffies(2000)
+
+static bool dcp_has_modes(struct apple_dcp *dcp)
+{
+	bool ret;
+
+	mutex_lock(&dcp->modes_lock);
+	ret = dcp->nr_modes > 0;
+	mutex_unlock(&dcp->modes_lock);
+
+	return ret;
+}
 
 /*
- * A display requested while IOMFB is powered off is published with empty
- * TimingElements, ColorElements and DisplayAttributes (DCP 13.5 trace, j473).
+ * A display released and requested again while IOMFB was powered off was
+ * published with empty TimingElements, ColorElements and DisplayAttributes
+ * (DCP 13.5 trace, j473). firstClientOpen() makes the DCP send them at start.
  */
-static void dcp_read_sink_modes(struct apple_dcp *dcp)
+static void dcp_work_sink_modes(struct work_struct *work)
 {
-	mutex_lock(&dcp->power_mutex);
-	if (dcp->powered)
-		goto out_unlock;
+	struct apple_dcp *dcp = container_of(work, struct apple_dcp, sink_modes_wq);
+	bool was_on;
 
 	if (!wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT) ||
-	    dcp->nr_modes)
-		goto out_unlock;
+	    dcp->crashed || dcp_has_modes(dcp))
+		return;
 
+	mutex_lock(&dcp->power_mutex);
+	if (dcp->powered || dcp->stopping || dcp->crashed) {
+		mutex_unlock(&dcp->power_mutex);
+		return;
+	}
+	was_on = dcp->iomfb_on;
 	reinit_completion(&dcp->timings_done);
-	_dcp_poweron(dcp);
-	if (!wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT))
-		dev_err(dcp->dev, "no TimingElements after power on\n");
-	_dcp_poweroff(dcp);
-
-out_unlock:
+	_dcp_poweron(dcp, true);
+	dcp->iomfb_on = true;
 	mutex_unlock(&dcp->power_mutex);
+
+	if (!wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT))
+		dev_err(dcp->dev, "no TimingElements after reopening IOMFB\n");
+
+	mutex_lock(&dcp->power_mutex);
+	if (!dcp->powered && !dcp->stopping && !was_on) {
+		_dcp_poweroff(dcp);
+		dcp->iomfb_on = false;
+	}
+	mutex_unlock(&dcp->power_mutex);
+}
+
+static void dcp_work_release_display(struct work_struct *work)
+{
+	struct apple_dcp *dcp = container_of(to_delayed_work(work), struct apple_dcp,
+					     release_wq);
+
+	if (gpiod_get_value_cansleep(dcp->hdmi_hpd) || READ_ONCE(dcp->powered))
+		return;
+
+	disconnected_hpd_event(dcp->connector);
+	dcp_dptx_disconnect(dcp, 0);
+}
+
+static void dcp_stop_hpd_work(struct apple_dcp *dcp)
+{
+	mutex_lock(&dcp->power_mutex);
+	dcp->stopping = true;
+	mutex_unlock(&dcp->power_mutex);
+	complete_all(&dcp->timings_done);
+	cancel_work_sync(&dcp->sink_modes_wq);
+	cancel_delayed_work_sync(&dcp->release_wq);
 }
 
 void dcp_poweron(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	mutex_lock(&dcp->power_mutex);
+	dcp->powered = true;
+	mutex_unlock(&dcp->power_mutex);
+	complete_all(&dcp->timings_done);
+	cancel_work_sync(&dcp->sink_modes_wq);
+	cancel_delayed_work_sync(&dcp->release_wq);
 
 	mutex_lock(&dcp->power_mutex);
 	if (dcp->hdmi_hpd) {
@@ -722,8 +779,8 @@ void dcp_poweron(struct platform_device *pdev)
 			dcp_dptx_connect(dcp, 0);
 	}
 
-	_dcp_poweron(dcp);
-	dcp->powered = true;
+	_dcp_poweron(dcp, false);
+	dcp->iomfb_on = true;
 	mutex_unlock(&dcp->power_mutex);
 
 	if (dcp->avep)
@@ -740,15 +797,11 @@ void dcp_poweroff(struct platform_device *pdev)
 	mutex_lock(&dcp->power_mutex);
 	_dcp_poweroff(dcp);
 	dcp->powered = false;
+	dcp->iomfb_on = false;
 	mutex_unlock(&dcp->power_mutex);
 
-	if (dcp->hdmi_hpd) {
-		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
-		if (!connected) {
-			disconnected_hpd_event(dcp->connector);
-			dcp_dptx_disconnect(dcp, 0);
-		}
-	}
+	if (dcp->hdmi_hpd && !gpiod_get_value_cansleep(dcp->hdmi_hpd))
+		schedule_delayed_work(&dcp->release_wq, DCP_RELEASE_DELAY);
 }
 
 static void dcp_work_register_backlight(struct work_struct *work)
@@ -1071,6 +1124,13 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	mutex_init(&dcp->modes_lock);
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);
+	INIT_WORK(&dcp->sink_modes_wq, dcp_work_sink_modes);
+	INIT_DELAYED_WORK(&dcp->release_wq, dcp_work_release_display);
+	dcp->powered = false;
+	dcp->stopping = false;
+	/* DCP syslog at start: "set_device_enabled_gated: current state: 1" */
+	dcp->iomfb_on = true;
+	dcp->client_open = false;
 
 	if (!show_notch)
 		ret = of_property_read_u32(dev->of_node, "apple,notch-height",
@@ -1180,6 +1240,7 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 
 	if (dcp->hdmi_hpd_irq)
 		disable_irq(dcp->hdmi_hpd_irq);
+	dcp_stop_hpd_work(dcp);
 
 	typec_mux_put(dcp->typec_mux);
 
@@ -1415,6 +1476,7 @@ static int dcp_platform_suspend(struct device *dev)
 
 	if (dcp->hdmi_hpd_irq) {
 		disable_irq(dcp->hdmi_hpd_irq);
+		dcp_stop_hpd_work(dcp);
 		disconnected_hpd_event(dcp->connector);
 		dcp_dptx_disconnect(dcp, 0);
 	}
@@ -1432,8 +1494,12 @@ static int dcp_platform_resume(struct device *dev)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 
-	if (dcp->hdmi_hpd_irq)
+	if (dcp->hdmi_hpd_irq) {
+		mutex_lock(&dcp->power_mutex);
+		dcp->stopping = false;
+		mutex_unlock(&dcp->power_mutex);
 		enable_irq(dcp->hdmi_hpd_irq);
+	}
 
 	if (dcp->avep)
 		av_service_connect(dcp);
