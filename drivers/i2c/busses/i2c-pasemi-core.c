@@ -244,6 +244,16 @@ static int pasemi_i2c_xfer(struct i2c_adapter *adapter,
 	struct pasemi_smbus *smbus = adapter->algo_data;
 	int ret, i;
 
+	/*
+	 * A read without STOP leaves the transaction open for further reads
+	 * (see the SMBus block read sequence below): the controller neither
+	 * ends the transfer nor signals XEN, so a repeated START can't follow
+	 * it and the bus is left stuck. Only allow a read as the last message.
+	 */
+	for (i = 0; i < num - 1; i++)
+		if (msgs[i].flags & I2C_M_RD)
+			return -EOPNOTSUPP;
+
 	ret = pasemi_smb_clear(smbus);
 	if (ret)
 		return ret;
