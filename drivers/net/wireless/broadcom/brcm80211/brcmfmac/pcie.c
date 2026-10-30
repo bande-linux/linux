@@ -395,6 +395,7 @@ struct brcmf_otp_params {
 struct brcmf_pciedev_info {
 	enum brcmf_pcie_state state;
 	bool in_irq;
+	bool reload_on_resume;
 	struct pci_dev *pdev;
 	char fw_name[BRCMF_FW_NAME_LEN];
 	char sig_name[BRCMF_FW_NAME_LEN];
@@ -3026,6 +3027,17 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 	devinfo = bus->bus_priv.pcie->devinfo;
 
 	brcmf_pcie_fwcon_timer(devinfo, false);
+	/* A firmware reset must not run while the device is suspended. */
+	brcmf_bus_cancel_reset_work(bus);
+
+	/*
+	 * Firmware that has stopped cannot acknowledge D3, and it must not
+	 * keep the system from suspending. Reload it on resume instead.
+	 */
+	if (bus->state != BRCMF_BUS_UP) {
+		brcmf_err(bus, "firmware not running, reloading it on resume\n");
+		goto reload;
+	}
 	brcmf_bus_change_state(bus, BRCMF_BUS_DOWN);
 
 	devinfo->mbdata_completed = false;
@@ -3034,13 +3046,19 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 	wait_event_timeout(devinfo->mbdata_resp_wait, devinfo->mbdata_completed,
 			   BRCMF_PCIE_MBDATA_TIMEOUT);
 	if (!devinfo->mbdata_completed) {
-		brcmf_err(bus, "Timeout on response for entering D3 substate\n");
-		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
-		return -EIO;
+		brcmf_err(bus, "Timeout on response for entering D3 substate, reloading firmware on resume\n");
+		goto reload;
 	}
 
 	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;
 
+	return 0;
+
+reload:
+	brcmf_bus_change_state(bus, BRCMF_BUS_DOWN);
+	brcmf_pcie_intr_disable(devinfo);
+	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;
+	devinfo->reload_on_resume = true;
 	return 0;
 }
 
@@ -3058,6 +3076,9 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 	devinfo = bus->bus_priv.pcie->devinfo;
 	brcmf_dbg(PCIE, "Enter, dev=%p, bus=%p\n", dev, bus);
 
+	if (devinfo->reload_on_resume)
+		goto cleanup;
+
 	/* Check if device is still up and running, if so we are ready */
 	if (brcmf_pcie_read_pcie32(devinfo, devinfo->reginfo->intmask) != 0) {
 		brcmf_dbg(PCIE, "Try to wakeup device....\n");
@@ -3071,6 +3092,7 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 		brcmf_pcie_intr_enable(devinfo);
 		brcmf_pcie_hostready(devinfo);
 		brcmf_pcie_fwcon_timer(devinfo, true);
+		brcmf_bus_allow_reset_work(bus);
 		return 0;
 	}
 
