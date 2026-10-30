@@ -745,17 +745,24 @@ static int tas2770_codec_probe(struct snd_soc_component *component)
 						   tas2770->v_sense_slot);
 
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 	}
 
 	if (tas2770->pdm_slot != -1) {
 		ret = tas2770_set_pdm_transmit(tas2770, tas2770->pdm_slot);
 
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 	}
 
 	return 0;
+
+err_disable_reg:
+	if (tas2770->sdz_gpio)
+		gpiod_set_value_cansleep(tas2770->sdz_gpio, 0);
+
+	regulator_disable(tas2770->sdz_reg);
+	return ret;
 }
 
 static void tas2770_codec_remove(struct snd_soc_component *component)
