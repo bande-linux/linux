@@ -10,6 +10,7 @@
 #include "iomfb_plane.h"
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_framebuffer.h>
@@ -323,6 +324,8 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	    fmt->format == DRM_FORMAT_XBGR8888 ||
 	    fmt->format == DRM_FORMAT_XBGR2101010)
 		is_premultiplied = true;
+	else if (fmt->has_alpha)
+		is_premultiplied = base->pixel_blend_mode == DRM_MODE_BLEND_PREMULTI;
 
 	new_state->src_rect = drm_to_dcp_rect_fp(&base->src);
 	new_state->dst_rect = drm_to_dcp_rect(&base->dst);
@@ -583,6 +586,7 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 	struct apple_plane *plane;
 	const u32 *fmts;
 	u32 num_fmts;
+	int ret;
 
 	switch (type) {
 	case DRM_PLANE_TYPE_PRIMARY:
@@ -623,6 +627,12 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 					  (1 << DRM_COLOR_RANGE_MAX) - 1,
 					  DRM_COLOR_YCBCR_BT709,
 					  DRM_COLOR_YCBCR_LIMITED_RANGE);
+
+	ret = drm_plane_create_blend_mode_property(&plane->base,
+						   BIT(DRM_MODE_BLEND_PREMULTI) |
+						   BIT(DRM_MODE_BLEND_COVERAGE));
+	if (ret)
+		return ERR_PTR(ret);
 
 	if (type == DRM_PLANE_TYPE_PRIMARY)
 		drm_plane_helper_add(&plane->base, &apple_primary_plane_helper_funcs);
