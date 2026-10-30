@@ -567,22 +567,27 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 	}
 
 	if (!strcmp(req->key, "TimingElements")) {
-		dcp->modes = enumerate_modes(&ctx, &dcp->nr_modes,
-					     dcp->width_mm, dcp->height_mm,
-					     dcp->notch_height);
+		struct dcp_display_mode *modes;
+		unsigned int nr_modes = 0;
+		bool parsed = true;
 
-		if (IS_ERR(dcp->modes)) {
+		modes = enumerate_modes(&ctx, &nr_modes, dcp->width_mm,
+					dcp->height_mm, dcp->notch_height);
+		if (IS_ERR(modes)) {
 			dev_warn(dcp->dev, "failed to parse modes\n");
-			dcp->modes = NULL;
-			dcp->nr_modes = 0;
-			return false;
-		}
-		if (dcp->nr_modes == 0)
+			modes = NULL;
+			nr_modes = 0;
+			parsed = false;
+		} else if (nr_modes == 0) {
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
+		}
 
-		complete_all(&dcp->timings_done);
-		if (dcp->connector && dcp->connector->connected)
+		if (dcp_replace_modes(dcp, modes, nr_modes) && !dcp->main_display &&
+		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
+		complete_all(&dcp->timings_done);
+
+		return parsed;
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
 		ret = parse_display_attributes(&ctx, &dcp->width_mm,
 					&dcp->height_mm);
@@ -1227,13 +1232,18 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
-	struct dcp_display_mode *mode;
+	struct dcp_display_mode found, *mode = &found;
+	struct dcp_display_mode *match;
 	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
 	int ret;
 
-	mode = lookup_mode(dcp, &crtc_state->mode);
-	if (!mode) {
+	mutex_lock(&dcp->modes_lock);
+	match = lookup_mode(dcp, &crtc_state->mode);
+	if (match)
+		found = *match;
+	mutex_unlock(&dcp->modes_lock);
+	if (!match) {
 		dev_err(dcp->dev, "no match for " DRM_MODE_FMT "\n",
 			DRM_MODE_ARG(&crtc_state->mode));
 		return -EIO;

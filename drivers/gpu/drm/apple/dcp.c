@@ -184,10 +184,12 @@ void dcp_set_dimensions(struct apple_dcp *dcp)
 	 * TimingElements, dimensions are calculated when parsing
 	 * DisplayAttributes, and TimingElements may be sent first
 	 */
+	mutex_lock(&dcp->modes_lock);
 	for (i = 0; i < dcp->nr_modes; ++i) {
 		dcp->modes[i].mode.width_mm = width_mm;
 		dcp->modes[i].mode.height_mm = height_mm;
 	}
+	mutex_unlock(&dcp->modes_lock);
 }
 
 bool dcp_has_panel(struct apple_dcp *dcp)
@@ -1066,6 +1068,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		dev_info(dev, "DCP index:%u dptx target phy: %u dptx die: %u\n",
 			 dcp->index, dcp->dptx_phy, dcp->dptx_die);
 	mutex_init(&dcp->hpd_mutex);
+	mutex_init(&dcp->modes_lock);
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);
 

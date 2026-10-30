@@ -351,20 +351,25 @@ int dcp_get_modes(struct drm_connector *connector)
 
 	struct drm_device *dev = connector->dev;
 	struct drm_display_mode *mode;
+	unsigned int nr_modes;
 	int i;
 
-	for (i = 0; i < dcp->nr_modes; ++i) {
+	mutex_lock(&dcp->modes_lock);
+	nr_modes = dcp->nr_modes;
+	for (i = 0; i < nr_modes; ++i) {
 		mode = drm_mode_duplicate(dev, &dcp->modes[i].mode);
 
 		if (!mode) {
+			mutex_unlock(&dcp->modes_lock);
 			dev_err(dev->dev, "Failed to duplicate display mode\n");
 			return 0;
 		}
 
 		drm_mode_probed_add(connector, mode);
 	}
+	mutex_unlock(&dcp->modes_lock);
 
-	if (dcp->nr_modes && dcp->dcpavserv.enabled &&
+	if (nr_modes && dcp->dcpavserv.enabled &&
 	    !apple_connector->drm_edid) {
 		const struct drm_edid *edid;
 		edid = dcpavserv_copy_edid(dcp->dcpavserv.service);
@@ -375,10 +380,47 @@ int dcp_get_modes(struct drm_connector *connector)
 			apple_connector->drm_edid = edid;
 		}
 	}
-	if (dcp->nr_modes && apple_connector->drm_edid)
+	if (nr_modes && apple_connector->drm_edid)
 		drm_edid_connector_update(connector, apple_connector->drm_edid);
 
-	return dcp->nr_modes;
+	return nr_modes;
+}
+
+static bool dcp_modes_equal(const struct dcp_display_mode *a, unsigned int nr_a,
+			    const struct dcp_display_mode *b, unsigned int nr_b)
+{
+	unsigned int i;
+
+	if (nr_a != nr_b)
+		return false;
+
+	for (i = 0; i < nr_a; i++) {
+		if (!drm_mode_equal(&a[i].mode, &b[i].mode) ||
+		    a[i].mode.type != b[i].mode.type ||
+		    a[i].color_mode_id != b[i].color_mode_id ||
+		    a[i].timing_mode_id != b[i].timing_mode_id)
+			return false;
+	}
+
+	return true;
+}
+
+bool dcp_replace_modes(struct apple_dcp *dcp, struct dcp_display_mode *modes,
+		       unsigned int nr_modes)
+{
+	struct dcp_display_mode *old;
+	bool changed;
+
+	mutex_lock(&dcp->modes_lock);
+	changed = !dcp_modes_equal(dcp->modes, dcp->nr_modes, modes, nr_modes);
+	old = dcp->modes;
+	dcp->modes = modes;
+	dcp->nr_modes = nr_modes;
+	mutex_unlock(&dcp->modes_lock);
+
+	kfree(old);
+
+	return changed;
 }
 
 /* The user may own drm_display_mode, so we need to search for our copy */
@@ -386,6 +428,8 @@ struct dcp_display_mode *lookup_mode(struct apple_dcp *dcp,
 					    const struct drm_display_mode *mode)
 {
 	int i;
+
+	lockdep_assert_held(&dcp->modes_lock);
 
 	for (i = 0; i < dcp->nr_modes; ++i) {
 		if (drm_mode_match(mode, &dcp->modes[i].mode,
@@ -403,8 +447,13 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 	struct apple_connector *apple_connector = to_apple_connector(connector);
 	struct platform_device *pdev = apple_connector->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	bool found;
 
-	return lookup_mode(dcp, mode) ? MODE_OK : MODE_BAD;
+	mutex_lock(&dcp->modes_lock);
+	found = lookup_mode(dcp, mode);
+	mutex_unlock(&dcp->modes_lock);
+
+	return found ? MODE_OK : MODE_BAD;
 }
 
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
@@ -455,9 +504,14 @@ bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct platform_device *pdev = apple_crtc->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	bool found;
 
 	/* TODO: support synthesized modes through scaling */
-	return lookup_mode(dcp, mode) != NULL;
+	mutex_lock(&dcp->modes_lock);
+	found = lookup_mode(dcp, mode);
+	mutex_unlock(&dcp->modes_lock);
+
+	return found;
 }
 
 
