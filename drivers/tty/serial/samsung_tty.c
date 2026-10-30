@@ -2092,11 +2092,13 @@ static int __maybe_unused s3c24xx_serial_suspend(struct device *dev)
 {
 	struct uart_port *port = s3c24xx_dev_to_port(dev);
 
+	if (!port)
+		return 0;
+
 	if (!console_suspend_enabled && uart_console(port))
 		device_set_wakeup_path(dev);
 
-	if (port)
-		uart_suspend_port(&s3c24xx_uart_drv, port);
+	uart_suspend_port(&s3c24xx_uart_drv, port);
 
 	return 0;
 }
