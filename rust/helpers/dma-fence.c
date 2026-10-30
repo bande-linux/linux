@@ -5,27 +5,27 @@
 
 #ifdef CONFIG_DMA_SHARED_BUFFER
 
-void rust_helper_dma_fence_get(struct dma_fence *fence)
+__rust_helper void rust_helper_dma_fence_get(struct dma_fence *fence)
 {
 	dma_fence_get(fence);
 }
 
-void rust_helper_dma_fence_put(struct dma_fence *fence)
+__rust_helper void rust_helper_dma_fence_put(struct dma_fence *fence)
 {
 	dma_fence_put(fence);
 }
 
-struct dma_fence_chain *rust_helper_dma_fence_chain_alloc(void)
+__rust_helper struct dma_fence_chain *rust_helper_dma_fence_chain_alloc(void)
 {
 	return dma_fence_chain_alloc();
 }
 
-void rust_helper_dma_fence_chain_free(struct dma_fence_chain *chain)
+__rust_helper void rust_helper_dma_fence_chain_free(struct dma_fence_chain *chain)
 {
 	dma_fence_chain_free(chain);
 }
 
-void rust_helper_dma_fence_set_error(struct dma_fence *fence, int error)
+__rust_helper void rust_helper_dma_fence_set_error(struct dma_fence *fence, int error)
 {
 	dma_fence_set_error(fence, error);
 }

@@ -24,6 +24,10 @@ use crate::{
 
 use core::marker::PhantomPinned;
 use core::ptr;
+use core::sync::atomic::{
+    AtomicPtr,
+    Ordering, //
+};
 use macros::vtable;
 
 register! {
@@ -101,11 +105,14 @@ pub trait Operations: Sized {
 ///
 /// # Invariants
 ///
-/// The rtk pointer is valid.
-/// The data pointer is a valid pointer from T::Data::into_foreign().
+/// Once [`RtKit::new`] has completed, `rtk` is a valid client pointer that does not change
+/// until the client is freed on drop. While [`RtKit::new`] runs, callbacks may already see
+/// `rtk` as null.
 #[pin_data(PinnedDrop)]
 pub struct RtKit<T: Operations> {
-    rtk: *mut bindings::apple_rtkit,
+    // `apple_rtkit_init()` starts the mailbox before it returns, so callbacks can run before the
+    // client pointer is known. It is published once `apple_rtkit_init()` succeeds.
+    rtk: AtomicPtr<bindings::apple_rtkit>,
     #[pin]
     data: T::Data,
     #[pin]
@@ -233,13 +240,15 @@ impl<T: Operations> RtKit<T> {
         T: 'a,
     {
         try_pin_init!(&this in Self {
+            rtk: AtomicPtr::new(ptr::null_mut()),
             data <- data,
-            _pin: PhantomPinned,
-            rtk: {
+            _pin: {
                 let mbox_idx = mbox_idx.try_into()?;
                 // SAFETY: `dev` is valid. The cookie is the pinned address of `Self`, which
                 // outlives the C client: `PinnedDrop` frees the client before `data` is dropped.
-                unsafe {
+                // All fields with storage (`rtk` and `data`) are initialized, so callbacks can
+                // reference `Self` as soon as the mailbox starts.
+                let client = unsafe {
                     from_err_ptr(bindings::apple_rtkit_init(
                         dev.as_raw(),
                         this.as_ptr().cast(),
@@ -250,7 +259,11 @@ impl<T: Operations> RtKit<T> {
                         mbox_idx,
                         &Self::VTABLE,
                     ))
-                }?
+                }?;
+                // SAFETY: The `rtk` field was initialized above and `this` is valid for the
+                // duration of the initializer.
+                unsafe { (*this.as_ptr()).rtk.store(client, Ordering::Release) };
+                PhantomPinned
             },
         }? Error)
     }
@@ -260,29 +273,43 @@ impl<T: Operations> RtKit<T> {
         &self.data
     }
 
+    /// Returns the C client, or `EBUSY` if a callback runs before [`RtKit::new`] has completed.
+    fn raw(&self) -> Result<*mut bindings::apple_rtkit> {
+        let rtk = self.rtk.load(Ordering::Acquire);
+        if rtk.is_null() {
+            Err(EBUSY)
+        } else {
+            Ok(rtk)
+        }
+    }
+
     /// Boots (wakes up) the RTKit coprocessor.
     pub fn wake(&self) -> Result {
-        // SAFETY: `rtk` is valid per the type invariant.
-        to_result(unsafe { bindings::apple_rtkit_wake(self.rtk) })
+        let rtk = self.raw()?;
+        // SAFETY: `rtk` is non-null, so valid per the type invariant.
+        to_result(unsafe { bindings::apple_rtkit_wake(rtk) })
     }
 
     /// Waits for the RTKit coprocessor to finish booting.
     pub fn boot(&self) -> Result {
-        // SAFETY: `rtk` is valid per the type invariant.
-        to_result(unsafe { bindings::apple_rtkit_boot(self.rtk) })
+        let rtk = self.raw()?;
+        // SAFETY: `rtk` is non-null, so valid per the type invariant.
+        to_result(unsafe { bindings::apple_rtkit_boot(rtk) })
     }
 
     /// Starts a non-system endpoint.
     pub fn start_endpoint(&self, endpoint: u8) -> Result {
-        // SAFETY: `rtk` is valid per the type invariant.
-        to_result(unsafe { bindings::apple_rtkit_start_ep(self.rtk, endpoint) })
+        let rtk = self.raw()?;
+        // SAFETY: `rtk` is non-null, so valid per the type invariant.
+        to_result(unsafe { bindings::apple_rtkit_start_ep(rtk, endpoint) })
     }
 
     /// Sends a message to a given endpoint.
     pub fn send_message(&self, endpoint: u8, message: u64) -> Result {
-        // SAFETY: `rtk` is valid per the type invariant.
+        let rtk = self.raw()?;
+        // SAFETY: `rtk` is non-null, so valid per the type invariant.
         to_result(unsafe {
-            bindings::apple_rtkit_send_message(self.rtk, endpoint, message, ptr::null_mut(), false)
+            bindings::apple_rtkit_send_message(rtk, endpoint, message, ptr::null_mut(), false)
         })
     }
 }
@@ -296,8 +323,8 @@ unsafe impl<T: Operations> Send for RtKit<T> {}
 #[pinned_drop]
 impl<T: Operations> PinnedDrop for RtKit<T> {
     fn drop(self: Pin<&mut Self>) {
-        // SAFETY: The pointer is valid by the type invariant. After this returns no callback
-        // runs, so `data` can be dropped.
-        unsafe { bindings::apple_rtkit_free(self.rtk) };
+        // SAFETY: `new` has completed, so the pointer is valid by the type invariant. After this
+        // returns no callback runs, so `data` can be dropped.
+        unsafe { bindings::apple_rtkit_free(self.rtk.load(Ordering::Acquire)) };
     }
 }

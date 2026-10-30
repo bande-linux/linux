@@ -1528,7 +1528,8 @@ pub fn default<T: Default>() -> impl Init<T> {
     // we can just move the data into the slot.
     unsafe {
         init_from_closure(|slot: *mut T| {
-            *slot = Default::default();
+            // `slot` is uninitialized: write without dropping the old contents.
+            slot.write(Default::default());
             Ok(())
         })
     }

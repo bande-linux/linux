@@ -22,8 +22,10 @@ use super::{Allocator, Vec};
 /// # Example
 ///
 /// ```
-/// let mut v = vec![0, 1, 2];
-/// let iter: std::vec::Drain<'_, _> = v.drain(..);
+/// let mut v = kernel::kvec![0, 1, 2]?;
+/// let iter = v.drain(..);
+/// assert_eq!(iter.as_slice(), &[0, 1, 2]);
+/// # Ok::<(), Error>(())
 /// ```
 // #[stable(feature = "drain", since = "1.6.0")]
 pub struct Drain<
@@ -54,11 +56,12 @@ impl<'a, T, A: Allocator> Drain<'a, T, A> {
     /// # Examples
     ///
     /// ```
-    /// let mut vec = vec!['a', 'b', 'c'];
+    /// let mut vec = kernel::kvec!['a', 'b', 'c']?;
     /// let mut drain = vec.drain(..);
     /// assert_eq!(drain.as_slice(), &['a', 'b', 'c']);
     /// let _ = drain.next().unwrap();
     /// assert_eq!(drain.as_slice(), &['b', 'c']);
+    /// # Ok::<(), Error>(())
     /// ```
     #[must_use]
     // #[stable(feature = "vec_drain_as_slice", since = "1.46.0")]

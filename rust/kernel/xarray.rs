@@ -424,16 +424,17 @@ impl<'a, T: ForeignOwnable> Guard<'a, T> {
         ptr: *mut c_void,
         gfp: alloc::Flags,
     ) -> Result<usize> {
-        // NB: `xa_limit::{max,min}` are inclusive.
+        // NB: `xa_limit::{max,min}` are inclusive. An exclusive bound at the edge of the `u32`
+        // range leaves no index to allocate, which is reported like a full range.
         let limit = bindings::xa_limit {
             max: match limit.end_bound() {
                 ops::Bound::Included(&end) => end,
-                ops::Bound::Excluded(&end) => end - 1,
+                ops::Bound::Excluded(&end) => end.checked_sub(1).ok_or(EBUSY)?,
                 ops::Bound::Unbounded => u32::MAX,
             },
             min: match limit.start_bound() {
                 ops::Bound::Included(&start) => start,
-                ops::Bound::Excluded(&start) => start + 1,
+                ops::Bound::Excluded(&start) => start.checked_add(1).ok_or(EBUSY)?,
                 ops::Bound::Unbounded => 0,
             },
         };

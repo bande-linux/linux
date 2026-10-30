@@ -173,7 +173,7 @@ unsafe extern "C" fn get_driver_name_cb<T: FenceOps>(
     let p = unsafe { crate::container_of!(fence, FenceObject<T>, fence) as *mut FenceObject<T> };
 
     // SAFETY: The caller is responsible for passing a valid dma_fence subtype
-    T::get_driver_name(unsafe { &mut *p }).as_char_ptr()
+    T::get_driver_name(unsafe { &*p }).as_char_ptr()
 }
 
 unsafe extern "C" fn get_timeline_name_cb<T: FenceOps>(
@@ -183,7 +183,7 @@ unsafe extern "C" fn get_timeline_name_cb<T: FenceOps>(
     let p = unsafe { crate::container_of!(fence, FenceObject<T>, fence) as *mut FenceObject<T> };
 
     // SAFETY: The caller is responsible for passing a valid dma_fence subtype
-    T::get_timeline_name(unsafe { &mut *p }).as_char_ptr()
+    T::get_timeline_name(unsafe { &*p }).as_char_ptr()
 }
 
 unsafe extern "C" fn enable_signaling_cb<T: FenceOps>(fence: *mut bindings::dma_fence) -> bool {
@@ -191,7 +191,7 @@ unsafe extern "C" fn enable_signaling_cb<T: FenceOps>(fence: *mut bindings::dma_
     let p = unsafe { crate::container_of!(fence, FenceObject<T>, fence) as *mut FenceObject<T> };
 
     // SAFETY: The caller is responsible for passing a valid dma_fence subtype
-    T::enable_signaling(unsafe { &mut *p })
+    T::enable_signaling(unsafe { &*p })
 }
 
 unsafe extern "C" fn signaled_cb<T: FenceOps>(fence: *mut bindings::dma_fence) -> bool {
@@ -199,7 +199,7 @@ unsafe extern "C" fn signaled_cb<T: FenceOps>(fence: *mut bindings::dma_fence) -
     let p = unsafe { crate::container_of!(fence, FenceObject<T>, fence) as *mut FenceObject<T> };
 
     // SAFETY: The caller is responsible for passing a valid dma_fence subtype
-    T::signaled(unsafe { &mut *p })
+    T::signaled(unsafe { &*p })
 }
 
 unsafe extern "C" fn release_cb<T: FenceOps>(fence: *mut bindings::dma_fence) {
@@ -397,7 +397,7 @@ impl FenceContexts {
 
     /// Create a new fence in a given context index.
     pub fn new_fence<T: FenceOps>(&self, context: u32, inner: T) -> Result<UniqueFence<T>> {
-        if context > self.count {
+        if context >= self.count {
             return Err(EINVAL);
         }
 
@@ -406,7 +406,7 @@ impl FenceContexts {
             bindings::krealloc_node_align(
                 core::ptr::null_mut(),
                 FenceObject::<T>::SIZE,
-                1,
+                core::mem::align_of::<FenceObject<T>>(),
                 bindings::GFP_KERNEL | bindings::__GFP_ZERO,
                 bindings::NUMA_NO_NODE,
             ) as *mut FenceObject<T>
