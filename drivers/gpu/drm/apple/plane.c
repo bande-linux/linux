@@ -315,13 +315,13 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	struct drm_framebuffer *fb = base->fb;
 	const struct drm_format_info *fmt = fb->format;
 	/*
-	 * DCP doesn't support XBGR8 / XRGB8 / XBGR2101010 natively. Blending as
+	 * DCP doesn't support XBGR8 / XRGB8 / XRGB2101010 natively. Blending as
 	 * pre-multiplied alpha with a black background can be used as
 	 * workaround for the bottommost plane.
 	 */
 	if (fmt->format == DRM_FORMAT_XRGB8888 ||
 	    fmt->format == DRM_FORMAT_XBGR8888 ||
-	    fmt->format == DRM_FORMAT_XBGR2101010)
+	    fmt->format == DRM_FORMAT_XRGB2101010)
 		is_premultiplied = true;
 
 	new_state->src_rect = drm_to_dcp_rect_fp(&base->src);
