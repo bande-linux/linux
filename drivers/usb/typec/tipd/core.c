@@ -1943,6 +1943,8 @@ static int tps6598x_probe(struct i2c_client *client)
 	return 0;
 
 err_disconnect:
+	if (tps->data->remove)
+		tps->data->remove(tps);
 	tps6598x_disconnect(tps, 0);
 err_unregister_port:
 	tps->data->unregister_port(tps);
