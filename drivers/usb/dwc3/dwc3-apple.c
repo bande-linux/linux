@@ -493,13 +493,15 @@ static void dwc3_apple_remove(struct platform_device *pdev)
 	usb_role_switch_unregister(appledwc->role_sw);
 
 	/*
-	 * If we're still in DWC3_APPLE_PROBE_PENDING we never got any cable connected event and
-	 * dwc3_core_probe was never called and there's hence no need to call dwc3_core_remove.
-	 * dwc3_apple_exit can be called unconditionally because it checks the state itself.
+	 * dwc3_apple_exit() checks the state itself: it exits host or gadget mode and the core if
+	 * a cable is connected and does nothing otherwise. Either way the core is not initialized
+	 * afterwards, so only release what dwc3_core_probe() set up. dwc3_core_remove() would exit
+	 * the mode (dwc->dr_mode still names the last one) and the core a second time.
+	 * If we're still in DWC3_APPLE_PROBE_PENDING, dwc3_core_probe() was never called.
 	 */
 	dwc3_apple_exit(appledwc);
 	if (appledwc->state != DWC3_APPLE_PROBE_PENDING)
-		dwc3_core_remove(&appledwc->dwc);
+		dwc3_core_release(&appledwc->dwc);
 }
 
 static const struct of_device_id dwc3_apple_of_match[] = {

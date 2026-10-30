@@ -66,6 +66,19 @@ int dwc3_core_probe(const struct dwc3_probe_data *data);
  */
 void dwc3_core_remove(struct dwc3 *dwc);
 
+/**
+ * dwc3_core_release - Release the core dwc3 driver after the glue exited it
+ * @dwc: Pointer to DWC3 controller context
+ *
+ * Counterpart of dwc3_core_probe() for glue drivers that use
+ * skip_core_init_mode and manage the target mode and the core themselves.
+ * Unlike dwc3_core_remove() it neither exits the host or gadget mode nor
+ * calls dwc3_core_exit(): the glue must already have done both (or never
+ * re-initialized the core after its last dwc3_core_exit()). It releases
+ * everything else dwc3_core_probe() set up.
+ */
+void dwc3_core_release(struct dwc3 *dwc);
+
 /*
  * The following callbacks are provided for glue drivers to call from their
  * own pm callbacks provided in struct dev_pm_ops. Glue drivers can perform
