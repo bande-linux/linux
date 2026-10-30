@@ -154,6 +154,29 @@ impl<T: DriverGpuVm> GpuVmBo<T> {
         &self.data
     }
 
+    /// Returns the VA ranges at which this object is mapped in its [`GpuVm`].
+    pub fn va_ranges(&self) -> Result<KVec<Range<u64>>> {
+        let mut ranges = KVec::new();
+        let _guard = self.lock_gpuva();
+        // SAFETY: `self` is a valid vm_bo, and its gpuva list is protected by the gpuva lock.
+        let head = unsafe { &raw mut (*self.as_raw()).list.gpuva };
+        // SAFETY: The list head is initialized and stays valid while the lock is held.
+        let mut pos = unsafe { (*head).next };
+        while pos != head {
+            // SAFETY: Entries of the vm_bo's gpuva list are `drm_gpuva::gem.entry` members.
+            let va = unsafe {
+                pos.byte_sub(core::mem::offset_of!(bindings::drm_gpuva, gem.entry))
+                    .cast::<bindings::drm_gpuva>()
+            };
+            // SAFETY: `va` is a valid `drm_gpuva` in the list.
+            let (addr, range) = unsafe { ((*va).va.addr, (*va).va.range) };
+            ranges.push(addr..addr + range, GFP_KERNEL)?;
+            // SAFETY: `pos` is a valid entry of the list.
+            pos = unsafe { (*pos).next };
+        }
+        Ok(ranges)
+    }
+
     pub(super) fn lock_gpuva(&self) -> crate::sync::MutexGuard<'_, ()> {
         // SAFETY: The GEM object is valid.
         let ptr = unsafe { &raw mut (*self.obj().as_raw()).gpuva.lock };

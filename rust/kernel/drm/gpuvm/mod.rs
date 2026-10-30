@@ -218,6 +218,21 @@ impl<T: DriverGpuVm> GpuVm<T> {
         Ok(GpuVmBoAlloc::new(self, obj, data)?.obtain())
     }
 
+    /// Returns the [`GpuVmBo`] of `obj` in this VM, if `obj` has one.
+    pub fn find_bo(&self, obj: &T::Object) -> Option<ARef<GpuVmBo<T>>> {
+        // SAFETY: `obj` is a valid GEM object, so its gpuva mutex is initialized.
+        let gpuva_lock =
+            unsafe { crate::sync::Mutex::<()>::from_raw(&raw mut (*obj.as_raw()).gpuva.lock) };
+        let _guard = gpuva_lock.lock();
+
+        // SAFETY: Both pointers are valid and the gpuva lock of `obj` is held.
+        let ptr = unsafe { bindings::drm_gpuvm_bo_find(self.as_raw(), obj.as_raw()) };
+
+        // INVARIANTS: `drm_gpuvm_bo_find()` only returns a vm_bo that is in the gem list.
+        // SAFETY: `drm_gpuvm_bo_find()` returns a new reference, or NULL.
+        NonNull::new(ptr.cast()).map(|p| unsafe { ARef::<GpuVmBo<T>>::from_raw(p) })
+    }
+
     /// Clean up buffer objects that are no longer used.
     #[inline]
     pub fn deferred_cleanup(&self) {
