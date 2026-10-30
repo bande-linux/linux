@@ -193,10 +193,12 @@ dptxport_call_get_drive_settings(struct apple_epic_service *service,
 	 * retcode appears to be lane count, seeing 2 for USB-C dp alt mode
 	 * with lanes splitted for DP/USB3.
 	 */
-	if (le32_to_cpu(reply->retcode) != dptx->lane_count)
+	if (!dptx->lane_count)
+		dptx->lane_count = le32_to_cpu(reply->retcode);
+	else if (le32_to_cpu(reply->retcode) != dptx->lane_count)
 		dev_err(service->ep->dcp->dev,
-			"get_drive_settings: unexpected retcode %d\n",
-			reply->retcode);
+			"get_drive_settings: lane count %u, active %u\n",
+			le32_to_cpu(reply->retcode), dptx->lane_count);
 
 	reply->retcode = cpu_to_le32(dptx->lane_count);
 	reply->unk5 = cpu_to_le32(dptx->drive_settings[0]);
@@ -269,12 +271,12 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 			dev_dbg(dcp->dev, "get_max_lane_count: phy lanes: %d\n",
 				phy_ops.dp.lanes);
 			// default to 4 lanes
-			dptx->lane_count = 4;
+			dptx->max_lane_count = 4;
 		} else {
-			dptx->lane_count = phy_ops.dp.lanes;
+			dptx->max_lane_count = phy_ops.dp.lanes;
 		}
 		reply->retcode = cpu_to_le32(0);
-		reply->lane_count = cpu_to_le64(dptx->lane_count);
+		reply->lane_count = cpu_to_le64(dptx->max_lane_count);
 	}
 
 	return 0;
@@ -298,9 +300,9 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 
 	u64 lane_count = le64_to_cpu(request->lane_count);
 
-	if (dptx->lane_count < lane_count)
-		dev_err(dcp->dev, "set_active_lane_count: unexpected lane "
-			"count:%llu phy: %d\n", lane_count, dptx->lane_count);
+	if (dptx->max_lane_count && dptx->max_lane_count < lane_count)
+		dev_err(dcp->dev, "set_active_lane_count: lane count %llu above maximum %u\n",
+			lane_count, dptx->max_lane_count);
 
 	switch (lane_count) {
 	case 0 ... 2:
@@ -324,8 +326,8 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 				return ret;
 		}
 		dptx->phy_ops.dp.set_lanes = 0;
-		dptx->lane_count = lane_count;
 	}
+	dptx->lane_count = lane_count;
 
 	reply->retcode = cpu_to_le32(retcode);
 	reply->lane_count = cpu_to_le64(lane_count);
