@@ -189,6 +189,7 @@ static void dwc3_apple_set_usb3_phy_mode(struct dwc3_apple *appledwc, enum phy_m
 static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 {
 	struct dwc3_probe_data probe_data = {};
+	void *group;
 	int ret;
 
 	lockdep_assert_held(&appledwc->lock);
@@ -201,9 +202,21 @@ static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 	probe_data.skip_core_init_mode = true;
 	probe_data.properties = DWC3_DEFAULT_PROPERTIES;
 
+	/*
+	 * dwc3_core_probe() allocates device managed resources (the MMIO region, the PHYs) that
+	 * would otherwise only be released on unbind. Release them if it fails so that the next
+	 * cable connection can try again.
+	 */
+	group = devres_open_group(appledwc->dev, NULL, GFP_KERNEL);
+	if (!group)
+		return -ENOMEM;
+
 	ret = dwc3_core_probe(&probe_data);
-	if (ret)
+	if (ret) {
+		devres_release_group(appledwc->dev, group);
 		return ret;
+	}
+	devres_close_group(appledwc->dev, group);
 
 	appledwc->state = DWC3_APPLE_NO_CABLE;
 	return 0;
