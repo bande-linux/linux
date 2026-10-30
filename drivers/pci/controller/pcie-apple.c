@@ -229,6 +229,7 @@ static struct irq_chip apple_msi_bottom_chip = {
 	.irq_eoi		= irq_chip_eoi_parent,
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
 	.irq_set_type		= irq_chip_set_type_parent,
+	.irq_set_wake		= irq_chip_set_wake_parent,
 	.irq_compose_msi_msg	= apple_msi_compose_msg,
 };
 
@@ -673,7 +674,7 @@ static const struct msi_parent_ops apple_msi_parent_ops = {
 	.required_flags		= (MSI_FLAG_USE_DEF_DOM_OPS	|
 				   MSI_FLAG_USE_DEF_CHIP_OPS	|
 				   MSI_FLAG_PCI_MSI_MASK_PARENT),
-	.chip_flags		= MSI_CHIP_FLAG_SET_EOI,
+	.chip_flags		= MSI_CHIP_FLAG_SET_EOI | MSI_CHIP_FLAG_SET_WAKE,
 	.bus_select_token	= DOMAIN_BUS_PCI_MSI,
 	.init_dev_msi_info	= msi_lib_init_dev_msi_info,
 };
