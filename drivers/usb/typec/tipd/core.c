@@ -1921,15 +1921,14 @@ static int tps6598x_probe(struct i2c_client *client)
 						tps->data->irq_handler,
 						IRQF_SHARED | IRQF_ONESHOT,
 						dev_name(&client->dev), tps);
+		if (ret)
+			goto err_disconnect;
 	} else {
 		dev_dbg(tps->dev, "no IRQ specified, using polling mode\n");
 		INIT_DELAYED_WORK(&tps->wq_poll, tps6598x_poll_work);
 		queue_delayed_work(system_power_efficient_wq, &tps->wq_poll,
 				   msecs_to_jiffies(POLL_INTERVAL));
 	}
-
-	if (ret)
-		goto err_disconnect;
 
 	i2c_set_clientdata(client, tps);
 	fwnode_handle_put(fwnode);
