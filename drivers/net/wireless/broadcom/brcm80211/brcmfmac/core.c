@@ -1496,6 +1496,8 @@ void brcmf_detach(struct device *dev)
 #endif
 
 	brcmf_bus_change_state(bus_if, BRCMF_BUS_DOWN);
+	if (drvr->config)
+		brcmf_cfg80211_cancel_escan_timeout(drvr->config);
 	/* make sure primary interface removed last */
 	for (i = BRCMF_MAX_IFS - 1; i > -1; i--) {
 		struct brcmf_if *ifp = drvr->iflist[i];

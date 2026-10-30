@@ -3,7 +3,9 @@
  * Copyright (c) 2014 Broadcom Corporation
  */
 
+#include <linux/ctype.h>
 #include <linux/netdevice.h>
+#include <linux/unaligned.h>
 #include <linux/module.h>
 
 #include <brcm_hw_ids.h>
@@ -44,13 +46,21 @@ static const char *brcmf_feat_names[] = {
 };
 #undef BRCMF_FEAT_DEF
 
+/**
+ * struct brcmf_feat_fwcap - firmware capability to feature mapping.
+ *
+ * @feature: feature that the capability enables.
+ * @fwcap_id: capability name in the "cap" iovar.
+ * @count_suffix: the name may be followed by a decimal count, as in "mbss4".
+ */
 struct brcmf_feat_fwcap {
 	enum brcmf_feat_id feature;
 	const char * const fwcap_id;
+	bool count_suffix;
 };
 
 static const struct brcmf_feat_fwcap brcmf_fwcap_map[] = {
-	{ BRCMF_FEAT_MBSS, "mbss" },
+	{ BRCMF_FEAT_MBSS, "mbss", true },
 	{ BRCMF_FEAT_MCHAN, "mchan" },
 	{ BRCMF_FEAT_P2P, "p2p" },
 	{ BRCMF_FEAT_MONITOR, "monitor" },
@@ -240,6 +250,49 @@ static void brcmf_feat_iovar_data_set(struct brcmf_if *ifp,
 	ifp->fwil_fwerr = false;
 }
 
+static bool brcmf_feat_fwcap_match(const struct brcmf_feat_fwcap *fwcap,
+				   const char *cap)
+{
+	size_t len = strlen(fwcap->fwcap_id);
+	const char *p;
+
+	if (strncmp(cap, fwcap->fwcap_id, len))
+		return false;
+	if (!cap[len])
+		return true;
+	if (!fwcap->count_suffix)
+		return false;
+	for (p = &cap[len]; *p; p++)
+		if (!isdigit(*p))
+			return false;
+	return true;
+}
+
+/*
+ * Keep the firmware's own join preference, so that it can be put back after
+ * a connect with a BSS selection behaviour replaced it. The iovar returns
+ * a __le32 length followed by the preference elements.
+ */
+static void brcmf_feat_save_join_pref(struct brcmf_if *ifp)
+{
+	struct brcmf_pub *drvr = ifp->drvr;
+	u8 buf[sizeof(__le32) + BRCMF_JOIN_PREF_MAX_LEN] = { };
+	u32 len;
+	int err;
+
+	err = brcmf_fil_iovar_data_get(ifp, "join_pref", buf, sizeof(buf));
+	if (err)
+		return;
+
+	len = get_unaligned_le32(buf);
+	if (!len || len > BRCMF_JOIN_PREF_MAX_LEN) {
+		brcmf_dbg(INFO, "join_pref length %u not kept\n", len);
+		return;
+	}
+	memcpy(drvr->fw_join_pref, &buf[sizeof(__le32)], len);
+	drvr->fw_join_pref_len = len;
+}
+
 #define MAX_CAPS_BUFFER_SIZE	768
 static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 {
@@ -257,9 +310,11 @@ static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 
 	brcmf_dbg(INFO, "[ %s]\n", caps);
 
-	while ((cap = strsep(&cur, " "))) {
+	while ((cap = strsep(&cur, " \t\n"))) {
+		if (!*cap)
+			continue;
 		for (i = 0; i < ARRAY_SIZE(brcmf_fwcap_map); i++) {
-			if (strcmp(cap, brcmf_fwcap_map[i].fwcap_id))
+			if (!brcmf_feat_fwcap_match(&brcmf_fwcap_map[i], cap))
 				continue;
 			id = brcmf_fwcap_map[i].feature;
 			brcmf_dbg(INFO, "enabling feature: %s\n",
@@ -363,8 +418,9 @@ int brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_iovar_int_get(ifp, BRCMF_FEAT_FWSUP, "sup_wpa");
 
+	brcmf_feat_save_join_pref(ifp);
 	if (!brcmf_c_set_joinpref(ifp))
-		ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF);
+		ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF_RSSI_DELTA);
 
 	err = brcmf_fil_iovar_data_get(ifp, "join_ver", &join_ver, sizeof(join_ver));
 	if (!err) {

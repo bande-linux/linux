@@ -858,26 +858,30 @@ s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 
 	brcmf_dbg(SCAN, "Enter\n");
 
-	/* clear scan request, because the FW abort can cause a second call */
-	/* to this functon and might cause a double cfg80211_scan_done      */
-	scan_request = cfg->scan_request;
-	cfg->scan_request = NULL;
+	/*
+	 * Take the scan request atomically: the FW abort can cause a second
+	 * call, and the event worker, the timeout worker and an interface
+	 * going down can all get here at the same time. Only one of them
+	 * may report it to cfg80211.
+	 */
+	scan_request = xchg(&cfg->scan_request, NULL);
 
 	timer_delete_sync(&cfg->escan_timeout);
 
 	if (fw_abort) {
 		u32 len;
 		void *data = drvr->scan_param_handler.get_struct_for_request(cfg, &len, NULL);
-		if (!data){
-			bphy_err(drvr, "Scan abort failed to prepare abort struct\n");
-			return 0;
-		}
+
 		/* Do a scan abort to stop the driver's scan engine */
 		brcmf_dbg(SCAN, "ABORT scan in firmware\n");
-		err = brcmf_fil_cmd_data_set(ifp, BRCMF_C_SCAN, data, len);
+		if (data)
+			err = brcmf_fil_cmd_data_set(ifp, BRCMF_C_SCAN, data,
+						     len);
+		else
+			err = -ENOMEM;
 		kfree(data);
 		if (err)
-			bphy_err(drvr, "Scan abort failed\n");
+			bphy_err(drvr, "Scan abort failed (%d)\n", err);
 	}
 
 	brcmf_scan_config_mpc(ifp, 1);
@@ -2154,7 +2158,7 @@ static void brcmf_set_join_pref(struct brcmf_if *ifp,
 	join_pref_params[i].rssi_gain = 0;
 	join_pref_params[i].band = 0;
 	err = brcmf_fil_iovar_data_set(ifp, "join_pref", join_pref_params,
-				       sizeof(join_pref_params));
+				       (i + 1) * sizeof(join_pref_params[0]));
 	if (err)
 		bphy_err(drvr, "Set join_pref error (%d)\n", err);
 }
@@ -3466,6 +3470,20 @@ void brcmf_abort_scanning(struct brcmf_cfg80211_info *cfg)
 	}
 	clear_bit(BRCMF_SCAN_STATUS_BUSY, &cfg->scan_status);
 	clear_bit(BRCMF_SCAN_STATUS_ABORT, &cfg->scan_status);
+}
+
+/*
+ * Stop the scan timeout before the interfaces are removed: its worker uses
+ * escan_info.ifp. Called with the bus down, so no new scan can be started
+ * and arm the timer; the wiphy lock waits for a scan request that is still
+ * between starting the scan and arming it.
+ */
+void brcmf_cfg80211_cancel_escan_timeout(struct brcmf_cfg80211_info *cfg)
+{
+	wiphy_lock(cfg->wiphy);
+	timer_delete_sync(&cfg->escan_timeout);
+	wiphy_unlock(cfg->wiphy);
+	cancel_work_sync(&cfg->escan_timeout_work);
 }
 
 static void brcmf_cfg80211_escan_timeout_worker(struct work_struct *work)
@@ -6453,6 +6471,21 @@ done:
 	return err;
 }
 
+static bool
+brcmf_fwsup_is_authorized(struct brcmf_cfg80211_profile *profile,
+			  struct cfg80211_connect_resp_params *conn_params)
+{
+	if ((profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X ||
+	     profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM) &&
+	    brcmf_has_pmkid(conn_params->req_ie, conn_params->req_ie_len))
+		return true;
+	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE ||
+	    profile->use_fwsup == BRCMF_PROFILE_FWSUP_PSK)
+		return true;
+
+	return false;
+}
+
 static s32
 brcmf_bss_connect_done(struct brcmf_cfg80211_info *cfg,
 		       struct net_device *ndev, const struct brcmf_event_msg *e,
@@ -6488,14 +6521,11 @@ brcmf_bss_connect_done(struct brcmf_cfg80211_info *cfg,
 		conn_params.resp_ie = conn_info->resp_ie;
 		conn_params.resp_ie_len = conn_info->resp_ie_len;
 		authorized = completed &&
-			     ((profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE) ||
-			      (profile->use_fwsup == BRCMF_PROFILE_FWSUP_PSK));
+			     brcmf_fwsup_is_authorized(profile, &conn_params);
 		cfg80211_connect_done(ndev, &conn_params, GFP_KERNEL);
-		if (authorized) {
+		if (authorized)
 			cfg80211_port_authorized(ndev, profile->bssid, NULL, 0,
 						 GFP_KERNEL);
-			brcmf_dbg(CONN, "Report port authorized\n");
-		}
 		brcmf_dbg(CONN, "Report connect result - connection %s\n",
 			  completed ? "succeeded" : "failed");
 	}
@@ -7894,8 +7924,10 @@ static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MFP))
 		wiphy->n_cipher_suites--;
 	wiphy->bss_select_support = BIT(NL80211_BSS_SELECT_ATTR_RSSI) |
-				    BIT(NL80211_BSS_SELECT_ATTR_BAND_PREF) |
-				    BIT(NL80211_BSS_SELECT_ATTR_RSSI_ADJUST);
+				    BIT(NL80211_BSS_SELECT_ATTR_BAND_PREF);
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF_RSSI_DELTA))
+		wiphy->bss_select_support |=
+			BIT(NL80211_BSS_SELECT_ATTR_RSSI_ADJUST);
 
 	wiphy->bss_param_support = WIPHY_BSS_PARAM_AP_ISOLATE;
 
