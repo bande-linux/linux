@@ -48,10 +48,12 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 	case BTN_TOUCHID:
 		pm_wakeup_dev_event(smcin->dev, 0, (smcin->wakeup_mode && state));
 		/*
-		 * Suppress KEY_POWER reports when suspended to avoid powering down
-		 * immediately after waking from s2idle.
-		 * */
-		if (smcin->wakeup_mode)
+		 * Suppress KEY_POWER presses when suspended to avoid powering down
+		 * immediately after waking from s2idle. Releases are still reported
+		 * so a key pressed before suspend cannot be left stuck down; the
+		 * input core drops releases of keys that are not pressed.
+		 */
+		if (smcin->wakeup_mode && state)
 			return;
 
 		input_report_key(smcin->input, KEY_POWER, state);
@@ -75,7 +77,8 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 		}
 		break;
 	default:
-		dev_warn(smcin->dev, "Unknown SMC button event: %04lx\n", event & 0xffff);
+		dev_warn_ratelimited(smcin->dev, "Unknown SMC button event: %04lx\n",
+				     event & 0xffff);
 	}
 }
 
@@ -106,6 +109,13 @@ static int macsmc_input_event(struct notifier_block *nb, unsigned long event, vo
 	}
 }
 
+static void macsmc_input_unregister_notifier(void *data)
+{
+	struct macsmc_input *smcin = data;
+
+	blocking_notifier_chain_unregister(&smcin->smc->event_handlers, &smcin->nb);
+}
+
 static int macsmc_input_probe(struct platform_device *pdev)
 {
 	struct apple_smc *smc = dev_get_drvdata(pdev->dev.parent);
@@ -134,24 +144,21 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	smcin->input->phys = "macsmc-input (0)";
 	smcin->input->name = "Apple SMC power/lid events";
 
-	if (have_lid)
-		input_set_capability(smcin->input, EV_SW, SW_LID);
-	if (have_power)
-		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
-
 	if (have_lid) {
 		u8 val;
 
+		input_set_capability(smcin->input, EV_SW, SW_LID);
 		error = apple_smc_read_u8(smc, SMC_KEY(MSLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial lid state\n");
 		else
-			input_report_switch(smcin->input, SW_LID, val);
+			input_report_switch(smcin->input, SW_LID, !!val);
 	}
 
 	if (have_power) {
 		u32 val;
 
+		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
 		error = apple_smc_read_u32(smc, SMC_KEY(bHLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial power button state\n");
@@ -169,8 +176,13 @@ static int macsmc_input_probe(struct platform_device *pdev)
 
 	smcin->nb.notifier_call = macsmc_input_event;
 	blocking_notifier_chain_register(&smc->event_handlers, &smcin->nb);
+	error = devm_add_action_or_reset(&pdev->dev, macsmc_input_unregister_notifier, smcin);
+	if (error)
+		return error;
 
-	device_init_wakeup(&pdev->dev, true);
+	error = devm_device_init_wakeup(&pdev->dev);
+	if (error)
+		return dev_err_probe(&pdev->dev, error, "Failed to init wakeup\n");
 
 	return 0;
 }
