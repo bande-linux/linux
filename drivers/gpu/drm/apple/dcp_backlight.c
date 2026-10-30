@@ -120,7 +120,7 @@ static u32 calculate_dac(struct apple_dcp *dcp, int val)
 	else if (val == MIN_BRIGHTNESS_PART2)
 		return 16 * brightness_part2[0];
 	else if (val >= MAX_BRIGHTNESS_PART2)
-		return brightness_part2[ARRAY_SIZE(brightness_part2) - 1];
+		return 16 * brightness_part2[ARRAY_SIZE(brightness_part2) - 1];
 
 	if (val < MAX_BRIGHTNESS_PART1) {
 		dac = interpolate(val, MIN_BRIGHTNESS_PART1, MAX_BRIGHTNESS_PART1,
