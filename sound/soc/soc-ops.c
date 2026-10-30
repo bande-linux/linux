@@ -460,8 +460,17 @@ out:
 
 static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 {
-	struct soc_mixer_control *mc = (struct soc_mixer_control *)kctl->private_value;
+	struct soc_mixer_control *mc;
 
+	/*
+	 * A wildcard pattern can match controls of any type; only volsw
+	 * controls carry a struct soc_mixer_control in private_value.
+	 */
+	if (kctl->info != snd_soc_info_volsw &&
+	    kctl->info != snd_soc_info_volsw_sx)
+		return -EINVAL;
+
+	mc = (struct soc_mixer_control *)kctl->private_value;
 	if (max <= 0 || max > mc->max - mc->min)
 		return -EINVAL;
 	mc->platform_max = max;
