@@ -547,6 +547,16 @@ static int brcmf_msgbuf_query_dcmd(struct brcmf_pub *drvr, int ifidx,
 	timeout = brcmf_msgbuf_ioctl_resp_wait(msgbuf);
 	if (!timeout) {
 		bphy_err(drvr, "Timeout on response for query command\n");
+		/*
+		 * The firmware answers every control message, so it has
+		 * stopped. Fail the commands that follow at once instead of
+		 * waiting for each of them, and reload the firmware. While
+		 * the device is removed, its interrupts are already off, so
+		 * no answer can arrive and nothing needs reloading.
+		 */
+		brcmf_bus_change_state(drvr->bus_if, BRCMF_BUS_DOWN);
+		if (!READ_ONCE(drvr->bus_if->removing))
+			brcmf_fw_crashed(drvr->bus_if->dev);
 		return -EIO;
 	}
 
