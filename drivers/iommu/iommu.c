@@ -885,8 +885,8 @@ static int iommu_insert_resv_region(struct iommu_resv_region *new,
 	struct iommu_resv_region *iter, *tmp, *nr, *top;
 	LIST_HEAD(stack);
 
-	nr = iommu_alloc_resv_region(new->start, new->length,
-				     new->prot, new->type, GFP_KERNEL);
+	nr = iommu_alloc_resv_region_tr(new->start, new->dva, new->length,
+					new->prot, new->type, GFP_KERNEL);
 	if (!nr)
 		return -ENOMEM;
 
@@ -919,7 +919,10 @@ static int iommu_insert_resv_region(struct iommu_resv_region *new,
 check_overlap:
 		top_end = top->start + top->length - 1;
 
-		if (iter->start > top_end + 1) {
+		/* translated regions only merge if they share one offset */
+		if (iter->start > top_end + 1 ||
+		    (iter->type == IOMMU_RESV_TRANSLATED &&
+		     iter->dva - top->dva != iter->start - top->start)) {
 			list_move_tail(&iter->list, &stack);
 		} else {
 			top->length = max(top_end, iter_end) - top->start + 1;
