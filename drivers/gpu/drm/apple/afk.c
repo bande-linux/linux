@@ -630,7 +630,7 @@ static bool afk_recv(struct apple_dcp_afkep *ep)
 	 * the current dummy queue entry and we have to advance to the next one
 	 * which will contain the real data.
 	*/
-	if (rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
+	if ((size_t)rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
 		rptr = 0;
 		hdr = ep->rxbfr.buf + rptr;
 		magic = le32_to_cpu(hdr->magic);
@@ -647,10 +647,11 @@ static bool afk_recv(struct apple_dcp_afkep *ep)
 		ep->rxbfr.hdr->rptr = cpu_to_le32(rptr);
 	}
 
-	if (rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
+	if ((size_t)rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
 		dev_warn(ep->dcp->dev,
-			 "AFK[ep:%02x]: queue entry out of bounds: 0x%lx > 0x%lx\n",
-			 ep->endpoint, rptr + size + sizeof(*hdr), ep->rxbfr.bufsz);
+			 "AFK[ep:%02x]: queue entry out of bounds: 0x%zx > 0x%zx\n",
+			 ep->endpoint, (size_t)rptr + size + sizeof(*hdr),
+			 ep->rxbfr.bufsz);
 		return false;
 	}
 
