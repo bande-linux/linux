@@ -1120,6 +1120,12 @@ static void macaudio_be_exit(struct snd_soc_pcm_runtime *rtd)
 		for_each_rtd_codec_dais(rtd, i, dai)
 			snd_soc_component_set_jack(dai->component, NULL, NULL);
 	}
+
+	if (props->is_speakers) {
+		cancel_work_sync(&ma->lock_update_work);
+		cancel_delayed_work_sync(&ma->lock_timeout_work);
+		cancel_delayed_work_sync(&ma->lock_retry_work);
+	}
 }
 
 static int macaudio_fe_init(struct snd_soc_pcm_runtime *rtd)
@@ -1735,15 +1741,6 @@ static const struct of_device_id macaudio_snd_device_id[]  = {
 };
 MODULE_DEVICE_TABLE(of, macaudio_snd_device_id);
 
-static void macaudio_cancel_vlimit_works(void *data)
-{
-	struct macaudio_snd_data *ma = data;
-
-	cancel_work_sync(&ma->lock_update_work);
-	cancel_delayed_work_sync(&ma->lock_retry_work);
-	cancel_delayed_work_sync(&ma->lock_timeout_work);
-}
-
 static int macaudio_snd_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -1813,10 +1810,6 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	INIT_WORK(&data->lock_update_work, macaudio_vlimit_update_work);
 	INIT_DELAYED_WORK(&data->lock_timeout_work, macaudio_vlimit_timeout_work);
 	INIT_DELAYED_WORK(&data->lock_retry_work, macaudio_vlimit_retry_work);
-
-	ret = devm_add_action(dev, macaudio_cancel_vlimit_works, data);
-	if (ret)
-		return ret;
 
 	return devm_snd_soc_register_card(dev, card);
 }
