@@ -369,6 +369,13 @@ dcpep_cb_allocate_buffer(struct apple_dcp *dcp,
 	size = ALIGN(resp.dva_size, SZ_16K);
 	memdesc->buf = dma_alloc_coherent(dcp->dev, size,
 					  &memdesc->dva, GFP_KERNEL);
+	if (!memdesc->buf) {
+		dev_warn(dcp->dev, "failed to allocate %zu byte DCP buffer\n",
+			 size);
+		memdesc->size = 0;
+		clear_bit(id, dcp->memdesc_map);
+		return (struct dcp_allocate_buffer_resp){ 0 };
+	}
 
 	dma_get_sgtable(dcp->dev, &memdesc->map, memdesc->buf, memdesc->dva,
 			size);
@@ -445,6 +452,10 @@ dcpep_cb_map_physical(struct apple_dcp *dcp, struct dcp_map_physical_req *req)
 	}
 
 	id = find_first_zero_bit(dcp->memdesc_map, DCP_MAX_MAPPINGS);
+	if (id >= DCP_MAX_MAPPINGS) {
+		dev_warn(dcp->dev, "DCP overflowed mapping table, ignoring\n");
+		return (struct dcp_map_physical_resp){};
+	}
 	set_bit(id, dcp->memdesc_map);
 	dcp->memdesc[id].size = size;
 	dcp->memdesc[id].reg = req->paddr;

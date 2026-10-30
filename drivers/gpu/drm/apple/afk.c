@@ -7,6 +7,8 @@
 #include <linux/kconfig.h>
 #include <linux/of_platform.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 #include <linux/soc/apple/rtkit.h>
 
@@ -213,7 +215,8 @@ afk_match_service(struct apple_dcp_afkep *ep, const char *name)
 {
 	const struct apple_epic_service_ops *ops;
 
-	if (!name[0])
+	/* name is the NULL epic_name if the service has no init properties */
+	if (!name || !name[0])
 		return NULL;
 	if (!ep->ops)
 		return NULL;
@@ -628,7 +631,7 @@ static bool afk_recv(struct apple_dcp_afkep *ep)
 	 * the current dummy queue entry and we have to advance to the next one
 	 * which will contain the real data.
 	*/
-	if (rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
+	if ((size_t)rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
 		rptr = 0;
 		hdr = ep->rxbfr.buf + rptr;
 		magic = le32_to_cpu(hdr->magic);
@@ -645,10 +648,11 @@ static bool afk_recv(struct apple_dcp_afkep *ep)
 		ep->rxbfr.hdr->rptr = cpu_to_le32(rptr);
 	}
 
-	if (rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
+	if ((size_t)rptr + size + sizeof(*hdr) > ep->rxbfr.bufsz) {
 		dev_warn(ep->dcp->dev,
-			 "AFK[ep:%02x]: queue entry out of bounds: 0x%lx > 0x%lx\n",
-			 ep->endpoint, rptr + size + sizeof(*hdr), ep->rxbfr.bufsz);
+			 "AFK[ep:%02x]: queue entry out of bounds: 0x%zx > 0x%zx\n",
+			 ep->endpoint, (size_t)rptr + size + sizeof(*hdr),
+			 ep->rxbfr.bufsz);
 		return false;
 	}
 
@@ -1062,20 +1066,14 @@ static ssize_t service_call_write_file(struct file *file, const char __user *use
 			return -ENOMEM;
 	}
 
-	ret = copy_from_user(&call_info, user_buf, sizeof(call_info));
-	if (ret == sizeof(call_info))
+	if (copy_from_user(&call_info, user_buf, sizeof(call_info)))
 		return -EFAULT;
 	user_buf += sizeof(call_info);
 	count -= sizeof(call_info);
 
-	buf = kmalloc(count, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-	ret = copy_from_user(buf, user_buf, count);
-	if (ret == count) {
-		kfree(buf);
-		return -EFAULT;
-	}
+	buf = memdup_user(user_buf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	memset(srv->debugfs.scratch, 0, AFK_DEBUGFS_MAX_REPLY);
 	dma_mb();
@@ -1122,9 +1120,11 @@ static ssize_t service_raw_call_write_file(struct file *file, const char __user 
 			return -ENOMEM;
 	}
 
+	if (count > AFK_DEBUGFS_MAX_REPLY)
+		return -EINVAL;
+
 	memset(srv->debugfs.scratch, 0, AFK_DEBUGFS_MAX_REPLY);
-	ret = copy_from_user(srv->debugfs.scratch, user_buf, count);
-	if (ret == count)
+	if (copy_from_user(srv->debugfs.scratch, user_buf, count))
 		return -EFAULT;
 
 	ret = afk_send_command(srv, EPIC_SUBTYPE_STD_SERVICE, srv->debugfs.scratch, count,

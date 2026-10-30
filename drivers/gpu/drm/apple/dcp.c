@@ -804,12 +804,12 @@ static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 		goto err_destroy_pdev;
 	}
 
+	/* iommu_get_domain_for_dev() returns NULL, not an ERR_PTR, on failure */
 	dcp->iommu_dom = iommu_get_domain_for_dev(&dcp->piodma->dev);
-	if (IS_ERR(dcp->iommu_dom)) {
-		ret = dev_err_probe(dcp->dev, PTR_ERR(dcp->iommu_dom),
+	if (!dcp->iommu_dom) {
+		ret = dev_err_probe(dcp->dev, -ENODEV,
 				    "Failed to get default iommu domain for "
 				    "piodma device\n");
-		dcp->iommu_dom = NULL;
 		goto err_destroy_pdev;
 	}
 

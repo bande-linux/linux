@@ -170,7 +170,7 @@ const struct drm_edid *dcpavserv_copy_edid(struct apple_epic_service *service)
 		return ERR_PTR(-ENOMEM);
 
 	ret = afk_service_call(service, 1, 7, &cmd, sizeof(cmd), EDID_BUF_SIZE, resp,
-			       sizeof(resp) + EDID_BUF_SIZE, 0);
+			       sizeof(*resp) + EDID_BUF_SIZE, 0);
 	if (ret < 0)
 		return ERR_PTR(ret);
 

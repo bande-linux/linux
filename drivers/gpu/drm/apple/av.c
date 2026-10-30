@@ -196,7 +196,7 @@ dcp_audiosrv_osobject_call(struct apple_epic_service *service, u16 group,
 	} __attribute__((packed)) *hdr;
 	static_assert(sizeof(*hdr) == 48);
 	size_t bfr_len = output_maxsize + sizeof(*hdr);
-	void *bfr;
+	void *bfr __free(kfree) = NULL;
 	int ret;
 
 	bfr = kzalloc(bfr_len, GFP_KERNEL);
@@ -231,9 +231,11 @@ int dcp_audiosrv_get_elements(struct device *dev, void *elements, size_t maxsize
 					 elements, maxsize, &size);
 	up_write(&asrv->srv_rwsem);
 
-	if (ret && asrv->warned_get_elements) {
-		dev_err(dev, "audiosrv: error getting elements: %d\n", ret);
-		asrv->warned_get_elements = true;
+	if (ret) {
+		if (!asrv->warned_get_elements) {
+			dev_err(dev, "audiosrv: error getting elements: %d\n", ret);
+			asrv->warned_get_elements = true;
+		}
 	} else {
 		dev_dbg(dev, "audiosrv: got %zd bytes worth of elements\n", size);
 	}
@@ -254,9 +256,12 @@ int dcp_audiosrv_get_product_attrs(struct device *dev, void *attrs, size_t maxsi
 					 maxsize, &size);
 	up_write(&asrv->srv_rwsem);
 
-	if (ret && asrv->warned_get_product_attrs) {
-		dev_err(dev, "audiosrv: error getting product attributes: %d\n", ret);
-		asrv->warned_get_product_attrs = true;
+	if (ret) {
+		if (!asrv->warned_get_product_attrs) {
+			dev_err(dev, "audiosrv: error getting product attributes: %d\n",
+				ret);
+			asrv->warned_get_product_attrs = true;
+		}
 	} else {
 		dev_dbg(dev, "audiosrv: got %zd bytes worth of product attributes\n", size);
 	}
