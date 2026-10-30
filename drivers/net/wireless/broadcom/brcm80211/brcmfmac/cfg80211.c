@@ -2007,10 +2007,10 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 
 	brcmf_fil_bsscfg_int_set(netdev_priv(ndev), "mfp", mfp);
 	offset += RSN_CAP_LEN;
-	if (mfp && (ie_len - offset >= RSN_PMKID_COUNT_LEN)) {
+	if (mfp && (offset + RSN_PMKID_COUNT_LEN <= ie_len)) {
 		pmkid_count = ie[offset] + (ie[offset + 1] << 8);
 		offset += RSN_PMKID_COUNT_LEN + (pmkid_count * WLAN_PMKID_LEN);
-		if (ie_len - offset >= WPA_IE_MIN_OUI_LEN) {
+		if (offset + WPA_IE_MIN_OUI_LEN <= ie_len) {
 			group_mgmt_cs = &ie[offset];
 			if (memcmp(group_mgmt_cs, RSN_OUI, TLV_OUI_LEN) == 0) {
 				brcmf_fil_bsscfg_data_set(ifp, "bip",
