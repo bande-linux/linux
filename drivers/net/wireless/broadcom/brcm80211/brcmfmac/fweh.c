@@ -440,54 +440,64 @@ void brcmf_fweh_unregister(struct brcmf_pub *drvr,
 int brcmf_fweh_init_events(struct brcmf_if *ifp)
 {
 	struct brcmf_pub *drvr = ifp->drvr;
+	struct brcmf_fweh_info *fweh = drvr->fweh;
 	struct brcmf_eventmsgs_ext_le *eventmsgs;
-	size_t size = sizeof(*eventmsgs) + drvr->fweh->event_mask_len;
+	size_t size = sizeof(*eventmsgs) + fweh->event_mask_len;
 	int err;
 
+	/*
+	 * BRCMF_E_IF can safely be used to set the appropriate bit
+	 * in the event_mask as the firmware event code is guaranteed
+	 * to match the value of BRCMF_E_IF because it is old cruft
+	 * that all vendors have.
+	 */
+	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_EVENT_MSGS_EXT)) {
+		err = brcmf_fil_iovar_data_get(ifp, "event_msgs",
+					       fweh->event_mask,
+					       fweh->event_mask_len);
+		if (err) {
+			bphy_err(drvr, "Get event_msgs error (%d)\n", err);
+			return err;
+		}
+		brcmf_dbg(EVENT, "enable event IF\n");
+		setbit(fweh->event_mask, BRCMF_E_IF);
+		err = brcmf_fil_iovar_data_set(ifp, "event_msgs",
+					       fweh->event_mask,
+					       fweh->event_mask_len);
+		if (err)
+			bphy_err(drvr, "Set event_msgs error (%d)\n", err);
+		return err;
+	}
+
 	eventmsgs = kzalloc(size, GFP_KERNEL);
-	if(!eventmsgs)
+	if (!eventmsgs)
 		return -ENOMEM;
 
 	eventmsgs->version = EVENTMSGS_VER;
 	eventmsgs->command = EVENTMSGS_NONE;
-	eventmsgs->len = drvr->fweh->event_mask_len;
-	eventmsgs->maxgetsize = drvr->fweh->event_mask_len;
+	eventmsgs->len = fweh->event_mask_len;
+	eventmsgs->maxgetsize = fweh->event_mask_len;
 
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_EVENT_MSGS_EXT))
-		err = brcmf_fil_iovar_data_get(ifp, "event_msgs_ext",
-					       eventmsgs, size);
-	else
-		err = brcmf_fil_iovar_data_get(ifp, "event_msgs",
-					       drvr->fweh->event_mask,
-					       drvr->fweh->event_mask_len);
-
+	err = brcmf_fil_iovar_data_get(ifp, "event_msgs_ext", eventmsgs, size);
 	if (err) {
-		bphy_err(drvr, "Get event_msgs error (%d)\n", err);
+		bphy_err(drvr, "Get event_msgs_ext error (%d)\n", err);
 		kfree(eventmsgs);
 		return err;
 	}
 
 	brcmf_dbg(EVENT, "Event mask len: driver=%d fw=%d\n",
-		  drvr->fweh->event_mask_len, eventmsgs->len);
+		  fweh->event_mask_len, eventmsgs->len);
 
-	/* want to handle IF event as well */
 	brcmf_dbg(EVENT, "enable event IF\n");
 	setbit(eventmsgs->mask, BRCMF_E_IF);
 
 	eventmsgs->version = EVENTMSGS_VER;
 	eventmsgs->command = EVENTMSGS_SET_MASK;
-	eventmsgs->len = drvr->fweh->event_mask_len;
+	eventmsgs->len = fweh->event_mask_len;
 
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_EVENT_MSGS_EXT))
-		err = brcmf_fil_iovar_data_set(ifp, "event_msgs_ext",
-					       eventmsgs, size);
-	else
-		err = brcmf_fil_iovar_data_set(ifp, "event_msgs",
-					       drvr->fweh->event_mask,
-					       drvr->fweh->event_mask_len);
-
+	err = brcmf_fil_iovar_data_set(ifp, "event_msgs_ext", eventmsgs, size);
 	if (err)
-		bphy_err(drvr, "Set event_msgs error (%d)\n", err);
+		bphy_err(drvr, "Set event_msgs_ext error (%d)\n", err);
 
 	kfree(eventmsgs);
 	return err;
@@ -500,45 +510,53 @@ int brcmf_fweh_init_events(struct brcmf_if *ifp)
  */
 int brcmf_fweh_activate_events(struct brcmf_if *ifp)
 {
-	struct brcmf_pub *drvr = ifp->drvr;
+	struct brcmf_fweh_info *fweh = ifp->drvr->fweh;
 	struct brcmf_eventmsgs_ext_le *eventmsgs;
-	size_t size = sizeof(*eventmsgs) + drvr->fweh->event_mask_len;
+	enum brcmf_fweh_event_code code;
+	size_t size;
 	int i, err;
 
-	eventmsgs = kzalloc(size, GFP_KERNEL);
-	if(!eventmsgs)
-		return -ENOMEM;
-
-	for (i = 0; i < drvr->fweh->num_event_codes; i++) {
-		if (drvr->fweh->evt_handler[i]) {
+	memset(fweh->event_mask, 0, fweh->event_mask_len);
+	for (i = 0; i < fweh->num_event_codes; i++) {
+		if (fweh->evt_handler[i]) {
+			brcmf_fweh_map_fwevt_code(fweh, i, &code);
 			brcmf_dbg(EVENT, "enable event %s\n",
-				  brcmf_fweh_event_name(i));
-			setbit(eventmsgs->mask, i);
+				  brcmf_fweh_event_name(code));
+			setbit(fweh->event_mask, i);
 		}
 	}
 
 	/* want to handle IF event as well */
 	brcmf_dbg(EVENT, "enable event IF\n");
-	setbit(eventmsgs->mask, BRCMF_E_IF);
-
-	eventmsgs->version = EVENTMSGS_VER;
-	eventmsgs->command = EVENTMSGS_SET_MASK;
-	eventmsgs->len = drvr->fweh->event_mask_len;
+	setbit(fweh->event_mask, BRCMF_E_IF);
 
 	/* allow per-vendor method to activate firmware events */
 	if (!brcmf_fwvid_activate_events(ifp))
 		return 0;
 
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_EVENT_MSGS_EXT))
-		err = brcmf_fil_iovar_data_set(ifp, "event_msgs_ext",
-					       eventmsgs, size);
-	else
+	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_EVENT_MSGS_EXT)) {
 		err = brcmf_fil_iovar_data_set(ifp, "event_msgs",
-					       drvr->fweh->event_mask,
-					       drvr->fweh->event_mask_len);
+					       fweh->event_mask,
+					       fweh->event_mask_len);
+		if (err)
+			bphy_err(fweh->drvr, "Set event_msgs error (%d)\n",
+				 err);
+		return err;
+	}
 
+	size = sizeof(*eventmsgs) + fweh->event_mask_len;
+	eventmsgs = kzalloc(size, GFP_KERNEL);
+	if (!eventmsgs)
+		return -ENOMEM;
+
+	eventmsgs->version = EVENTMSGS_VER;
+	eventmsgs->command = EVENTMSGS_SET_MASK;
+	eventmsgs->len = fweh->event_mask_len;
+	memcpy(eventmsgs->mask, fweh->event_mask, fweh->event_mask_len);
+
+	err = brcmf_fil_iovar_data_set(ifp, "event_msgs_ext", eventmsgs, size);
 	if (err)
-		bphy_err(drvr, "Set event_msgs error (%d)\n", err);
+		bphy_err(fweh->drvr, "Set event_msgs_ext error (%d)\n", err);
 
 	kfree(eventmsgs);
 	return err;
