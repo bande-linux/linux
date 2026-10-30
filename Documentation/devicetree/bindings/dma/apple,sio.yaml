@@ -22,7 +22,9 @@ properties:
     items:
       - enum:
           - apple,t6000-sio
+          - apple,t6020-sio
           - apple,t8103-sio
+          - apple,t8112-sio
       - const: apple,sio
 
   reg:
@@ -44,6 +46,9 @@ properties:
     maxItems: 1
 
   power-domains:
+    maxItems: 1
+
+  resets:
     maxItems: 1
 
   memory-region:
