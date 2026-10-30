@@ -858,10 +858,13 @@ s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 
 	brcmf_dbg(SCAN, "Enter\n");
 
-	/* clear scan request, because the FW abort can cause a second call */
-	/* to this functon and might cause a double cfg80211_scan_done      */
-	scan_request = cfg->scan_request;
-	cfg->scan_request = NULL;
+	/*
+	 * Take the scan request atomically: the FW abort can cause a second
+	 * call, and the event worker, the timeout worker and an interface
+	 * going down can all get here at the same time. Only one of them
+	 * may report it to cfg80211.
+	 */
+	scan_request = xchg(&cfg->scan_request, NULL);
 
 	timer_delete_sync(&cfg->escan_timeout);
 
@@ -3466,6 +3469,20 @@ void brcmf_abort_scanning(struct brcmf_cfg80211_info *cfg)
 	}
 	clear_bit(BRCMF_SCAN_STATUS_BUSY, &cfg->scan_status);
 	clear_bit(BRCMF_SCAN_STATUS_ABORT, &cfg->scan_status);
+}
+
+/*
+ * Stop the scan timeout before the interfaces are removed: its worker uses
+ * escan_info.ifp. Called with the bus down, so no new scan can be started
+ * and arm the timer; the wiphy lock waits for a scan request that is still
+ * between starting the scan and arming it.
+ */
+void brcmf_cfg80211_cancel_escan_timeout(struct brcmf_cfg80211_info *cfg)
+{
+	wiphy_lock(cfg->wiphy);
+	timer_delete_sync(&cfg->escan_timeout);
+	wiphy_unlock(cfg->wiphy);
+	cancel_work_sync(&cfg->escan_timeout_work);
 }
 
 static void brcmf_cfg80211_escan_timeout_worker(struct work_struct *work)
