@@ -244,6 +244,7 @@ struct apple_dart {
 
 	u32 save_tcr[DART_MAX_STREAMS];
 	u32 save_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
+	u32 save_remap[DART_MAX_STREAMS / 4];
 
 	u64 *locked_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
 };
@@ -1706,6 +1707,11 @@ static __maybe_unused int apple_dart_suspend(struct device *dev)
 				readl(dart->regs + DART_TTBR(dart, sid, idx));
 	}
 
+	if (dart->hw->type != DART_T8110) {
+		for (sid = 0; sid < dart->num_streams; sid += 4)
+			dart->save_remap[sid / 4] = readl(DART_REMAP(dart, sid));
+	}
+
 	return 0;
 }
 
@@ -1723,6 +1729,11 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 	if (ret) {
 		dev_err(dev, "Failed to reset DART on resume\n");
 		return ret;
+	}
+
+	if (dart->hw->type != DART_T8110) {
+		for (sid = 0; sid < dart->num_streams; sid += 4)
+			writel(dart->save_remap[sid / 4], DART_REMAP(dart, sid));
 	}
 
 	for (sid = 0; sid < dart->num_streams; sid++) {
