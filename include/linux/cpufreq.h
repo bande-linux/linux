@@ -793,6 +793,7 @@ struct cpufreq_frequency_table {
 
 
 int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy);
+int cpufreq_frequency_table_boost_cpuinfo(struct cpufreq_policy *policy);
 
 int cpufreq_frequency_table_verify(struct cpufreq_policy_data *policy);
 

@@ -28,7 +28,8 @@ static bool policy_has_boost_freq(struct cpufreq_policy *policy)
 	return false;
 }
 
-int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy)
+static int cpufreq_frequency_table_limits(struct cpufreq_policy *policy,
+					  unsigned int *min, unsigned int *max)
 {
 	struct cpufreq_frequency_table *pos, *table = policy->freq_table;
 	unsigned int min_freq = ~0;
@@ -49,6 +50,23 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy)
 			max_freq = freq;
 	}
 
+	if (min_freq == ~0)
+		return -EINVAL;
+
+	*min = min_freq;
+	*max = max_freq;
+	return 0;
+}
+
+int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy)
+{
+	unsigned int min_freq, max_freq;
+	int ret;
+
+	ret = cpufreq_frequency_table_limits(policy, &min_freq, &max_freq);
+	if (ret)
+		return ret;
+
 	policy->cpuinfo.min_freq = min_freq;
 	/*
 	 * If the driver has set its own cpuinfo.max_freq above max_freq, leave
@@ -57,10 +75,25 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy)
 	if (policy->cpuinfo.max_freq < max_freq)
 		policy->cpuinfo.max_freq = max_freq;
 
-	if (min_freq == ~0)
-		return -EINVAL;
-	else
-		return 0;
+	return 0;
+}
+
+/*
+ * Unlike cpufreq_frequency_table_cpuinfo(), take both limits from the table
+ * alone, so that cpuinfo.max_freq drops again when boost is disabled.
+ */
+int cpufreq_frequency_table_boost_cpuinfo(struct cpufreq_policy *policy)
+{
+	unsigned int min_freq, max_freq;
+	int ret;
+
+	ret = cpufreq_frequency_table_limits(policy, &min_freq, &max_freq);
+	if (ret)
+		return ret;
+
+	policy->cpuinfo.min_freq = min_freq;
+	policy->cpuinfo.max_freq = max_freq;
+	return 0;
 }
 
 int cpufreq_frequency_table_verify(struct cpufreq_policy_data *policy)
