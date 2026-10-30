@@ -7,6 +7,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
+#include <linux/spinlock.h>
 
 #include <asm/fixmap.h>
 
@@ -22,12 +23,16 @@
 
 static void __iomem *dc_base;
 static bool dc_stalled;
+/* Serialises the console and tty writers so they cannot overfill the FIFO */
+static DEFINE_SPINLOCK(dc_tx_lock);
 
 static size_t dc_tx(void __iomem *base, const u8 *buf, size_t count)
 {
 	size_t sent = 0;
 	unsigned int waited = 0;
+	unsigned long flags;
 
+	spin_lock_irqsave(&dc_tx_lock, flags);
 	while (sent < count) {
 		u32 free = readl_relaxed(base + DATA_TX_FREE);
 
@@ -45,6 +50,7 @@ static size_t dc_tx(void __iomem *base, const u8 *buf, size_t count)
 		for (; free && sent < count; free--)
 			writel_relaxed(buf[sent++], base + DATA_TX8);
 	}
+	spin_unlock_irqrestore(&dc_tx_lock, flags);
 
 	return sent;
 }
