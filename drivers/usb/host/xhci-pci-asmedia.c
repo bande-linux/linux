@@ -80,7 +80,7 @@ static int asmedia_mbox_tx(struct pci_dev *pdev, u64 data)
 		return ret;
 	}
 	if (err)
-		return err;
+		return pcibios_err_to_errno(err);
 
 	pci_write_config_dword(pdev, ASMT_CFG_DATA_WRITE0, data);
 	pci_write_config_dword(pdev, ASMT_CFG_DATA_WRITE1, data >> 32);
@@ -104,7 +104,7 @@ static int asmedia_mbox_rx(struct pci_dev *pdev, u64 *data)
 		return ret;
 	}
 	if (err)
-		return err;
+		return pcibios_err_to_errno(err);
 
 	pci_read_config_dword(pdev, ASMT_CFG_DATA_READ0, &low);
 	pci_read_config_dword(pdev, ASMT_CFG_DATA_READ1, &high);
@@ -337,7 +337,7 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 			return ret;
 		}
 		if (err)
-			return err;
+			return pcibios_err_to_errno(err);
 
 		if (++index & 0x4000)
 			index += 0x4000;
