@@ -116,8 +116,11 @@
 	sound {
 		compatible = "apple,j274-macaudio", "apple,macaudio";
 		model = "Mac mini J274";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
 		dai-link@0 {
+			reg = <0>;
 			link-name = "Speaker";
 
 			cpu {
@@ -129,6 +132,7 @@
 		};
 
 		dai-link@1 {
+			reg = <1>;
 			link-name = "Headphone Jack";
 
 			cpu {

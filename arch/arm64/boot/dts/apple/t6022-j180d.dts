@@ -670,8 +670,11 @@
 	sound: sound {
 		compatible = "apple,j180-macaudio", "apple,macaudio";
 		model = "Mac Pro J180";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
 		dai-link@0 {
+			reg = <0>;
 			link-name = "Speakers";
 			/*
 			* DANGER ZONE: You can blow your speakers!
@@ -690,6 +693,7 @@
 		};
 
 		dai-link@1 {
+			reg = <1>;
 			link-name = "Headphone Jack";
 
 			cpu {
