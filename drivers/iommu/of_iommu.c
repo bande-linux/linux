@@ -187,6 +187,13 @@ iommu_resv_region_get_type(struct device *dev,
 	if (start == phys->start && end == phys->end)
 		return IOMMU_RESV_DIRECT;
 
+	/* a translated mapping must not reach past the physical region */
+	if (length > resource_size(phys)) {
+		dev_warn(dev, "treating oversized mapping [%pr] -> [%pap-%pap] as reservation\n",
+			 phys, &start, &end);
+		return IOMMU_RESV_RESERVED;
+	}
+
 	return IOMMU_RESV_TRANSLATED;
 }
 
