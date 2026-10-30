@@ -788,23 +788,23 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 	if (tas2764->irq) {
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK0, 0x00);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK1, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK2, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK3, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK4, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		ret = devm_request_threaded_irq(tas2764->dev, tas2764->irq, NULL, tas2764_irq,
 						IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW,
@@ -818,7 +818,7 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 						   tas2764->v_sense_slot);
 
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 	}
 
 	switch (tas2764->devid) {
@@ -827,7 +827,7 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 					TAS2764_PWR_CTRL_BOP_SRC,
 					TAS2764_PWR_CTRL_BOP_SRC);
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		for (i = 0; i < ARRAY_SIZE(sn012776_bop_presets); i++) {
 			ret = snd_soc_component_write(component,
@@ -835,14 +835,14 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 						sn012776_bop_presets[i]);
 
 			if (ret < 0)
-				return ret;
+				goto err_disable_reg;
 		}
 
 		/* Apply all enabled Apple quirks */
 		ret = tas2764_apply_init_quirks(tas2764);
 
 		if (ret < 0)
-			return ret;
+			goto err_disable_reg;
 
 		break;
 	default:
@@ -850,6 +850,13 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 	}
 
 	return 0;
+
+err_disable_reg:
+	if (tas2764->sdz_gpio)
+		gpiod_set_value_cansleep(tas2764->sdz_gpio, 0);
+
+	regulator_disable(tas2764->sdz_reg);
+	return ret;
 }
 
 static void tas2764_codec_remove(struct snd_soc_component *component)
