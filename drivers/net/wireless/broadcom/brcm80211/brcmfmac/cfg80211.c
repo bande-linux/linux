@@ -2319,24 +2319,24 @@ brcmf_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev,
 			  params->ssid_len);
 	join_params = drvr->join_param_handler.get_struct_for_connect(
 		cfg, &join_params_size, params);
-
-	if (join_params) {
-		err = brcmf_fil_bsscfg_data_set(ifp, "join", join_params,
-						join_params_size);
-
-		/* We only free the join parameters if we were successful.
-		 * Otherwise they are used to extract the fallback, below */
-		if (!err) {
-			kfree(join_params);
-			/* This is it. join command worked, we are done */
-			goto done;
-		}
-		/* For versions >= 1, this should have worked, so report the error */
-		if (drvr->join_param_handler.version >= 1) {
-			bphy_err(drvr, "Failed to use join iovar to join: %d\n",
-				 err);
-		}
+	if (!join_params) {
+		err = -ENOMEM;
+		goto done;
 	}
+
+	err = brcmf_fil_bsscfg_data_set(ifp, "join", join_params,
+					join_params_size);
+
+	/* We only free the join parameters if we were successful.
+	 * Otherwise they are used to extract the fallback, below */
+	if (!err) {
+		kfree(join_params);
+		/* This is it. join command worked, we are done */
+		goto done;
+	}
+	/* For versions >= 1, this should have worked, so report the error */
+	if (drvr->join_param_handler.version >= 1)
+		bphy_err(drvr, "Failed to use join iovar to join: %d\n", err);
 
 	/* Fallback to using WLC_SET_SSID approach, which just uses join_params parts of the structure */
 	fallback_join_params = drvr->join_param_handler.get_join_from_ext_join(
