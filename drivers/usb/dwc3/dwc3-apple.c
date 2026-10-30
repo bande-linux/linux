@@ -475,6 +475,7 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 	 * details.
 	 */
 	appledwc->state = DWC3_APPLE_PROBE_PENDING;
+	platform_set_drvdata(pdev, &appledwc->dwc);
 	ret = dwc3_apple_setup_role_switch(appledwc);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Failed to setup role switch\n");
