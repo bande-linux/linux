@@ -1372,13 +1372,13 @@ impl Vm {
         iova: u64,
         size: u64,
     ) -> Result {
-        // Unmapping a range can only do a single split, so just preallocate
-        // two GPUVAs.
+        // Unmapping a range can remap the mappings at both of its ends, and each
+        // remap takes two GPUVAs before handing back the unused one.
         let mut resources = VmOpResources {
             preallocated_gpuvas: [
                 Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
                 Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
-                None,
+                Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
             ],
         };
         let mut ctx = StepContext::new(dev, Prot::default(), false, &mut resources)?;
