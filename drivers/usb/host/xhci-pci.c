@@ -94,7 +94,6 @@
 #define PCI_DEVICE_ID_ASMEDIA_1042_XHCI			0x1042
 #define PCI_DEVICE_ID_ASMEDIA_1042A_XHCI		0x1142
 #define PCI_DEVICE_ID_ASMEDIA_1142_XHCI			0x1242
-#define PCI_DEVICE_ID_ASMEDIA_2142_XHCI			0x2142
 #define PCI_DEVICE_ID_ASMEDIA_3042_XHCI			0x3042
 #define PCI_DEVICE_ID_ASMEDIA_3242_XHCI			0x3242
 
@@ -722,6 +721,11 @@ static int xhci_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 	if (IS_ENABLED(CONFIG_USB_XHCI_PCI_PROM21) &&
 	    pci_match_id(pci_ids_prom21, dev))
+		return -ENODEV;
+
+	/* handled by xhci-pci-asmedia if enabled */
+	if (IS_ENABLED(CONFIG_USB_XHCI_PCI_ASMEDIA) &&
+	    xhci_pci_is_apple_asmedia(dev))
 		return -ENODEV;
 
 	return xhci_pci_common_probe(dev, id);
