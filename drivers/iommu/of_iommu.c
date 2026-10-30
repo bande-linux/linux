@@ -187,6 +187,12 @@ iommu_resv_region_get_type(struct device *dev,
 	if (start == phys->start && end == phys->end)
 		return IOMMU_RESV_DIRECT;
 
+	if (length > resource_size(phys)) {
+		dev_warn(dev, FW_BUG "mapping [%pap-%pap] -> %pr is larger than the region, reserving it\n",
+			 &start, &end, phys);
+		return IOMMU_RESV_RESERVED;
+	}
+
 	return IOMMU_RESV_TRANSLATED;
 }
 
