@@ -215,7 +215,8 @@ afk_match_service(struct apple_dcp_afkep *ep, const char *name)
 {
 	const struct apple_epic_service_ops *ops;
 
-	if (!name[0])
+	/* name is the NULL epic_name if the service has no init properties */
+	if (!name || !name[0])
 		return NULL;
 	if (!ep->ops)
 		return NULL;

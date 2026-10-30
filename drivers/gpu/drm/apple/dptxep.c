@@ -573,9 +573,10 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 			  const char *class, s64 unit)
 {
 
-	if (strcmp(name, "dcpdptx-port-epic"))
+	/* name and class are NULL if the service has no init properties */
+	if (!name || strcmp(name, "dcpdptx-port-epic"))
 		return;
-	if (strcmp(class, "AppleDCPDPTXRemotePort"))
+	if (!class || strcmp(class, "AppleDCPDPTXRemotePort"))
 		return;
 
 	trace_dptxport_init(service->ep->dcp, unit);
