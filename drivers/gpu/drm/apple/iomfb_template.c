@@ -37,6 +37,7 @@
 struct dcp_wait_cookie {
 	struct kref refcount;
 	struct completion done;
+	u32 result;
 };
 
 static void release_wait_cookie(struct kref *ref)
@@ -1228,6 +1229,7 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 	struct dcp_wait_cookie *wait = cookie;
 
 	if (wait) {
+		wait->result = *(u32 *)data;
 		complete(&wait->done);
 		kref_put(&wait->refcount, release_wait_cookie);
 	}
@@ -1240,6 +1242,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	struct dcp_display_mode *match;
 	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
+	u32 result;
 	int ret;
 
 	mutex_lock(&dcp->modes_lock);
@@ -1302,6 +1305,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	 */
 	ret = wait_for_completion_timeout(&cookie->done,
 					  msecs_to_jiffies(8500));
+	result = ret > 0 ? cookie->result : 0;
 
 	kref_put(&cookie->refcount, release_wait_cookie);
 	dcp->during_modeset = false;
@@ -1320,6 +1324,10 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			"set_digital_out_mode finished with %d to spare\n",
 			jiffies_to_msecs(ret));
 	}
+	if (result) {
+		dev_err(dcp->dev, "set_digital_out_mode failed: %#x\n", result);
+		return -EIO;
+	}
 	dcp->valid_mode = true;
 
 	return 0;
@@ -1335,6 +1343,12 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	int has_surface = 0;
 
 	crtc_state = drm_atomic_get_new_crtc_state(commit, crtc);
+
+	/* The DCP swallows swaps without a working mode and never completes them */
+	if (!dcp->valid_mode) {
+		schedule_work(&dcp->vblank_wq);
+		return;
+	}
 
 	/* Reset all surfaces to defaults */
 	memset(req, 0, sizeof(*req));
