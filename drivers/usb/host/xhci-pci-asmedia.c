@@ -141,7 +141,8 @@ static int asmedia_get_fw_version(struct pci_dev *pdev, u64 *version)
 	return 0;
 }
 
-static bool asmedia_check_firmware(struct pci_dev *pdev)
+/* Returns 1 if RAM firmware is running, 0 if only the ROM, or -errno */
+static int asmedia_check_firmware(struct pci_dev *pdev)
 {
 	u64 fwver;
 	int ret;
