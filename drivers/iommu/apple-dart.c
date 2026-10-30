@@ -1561,7 +1561,7 @@ err_sysfs_remove:
 err_free_irq:
 	free_irq(dart->irq, dart);
 err_clk_disable:
-	pm_runtime_put(dev);
+	pm_runtime_put_noidle(dev);
 	clk_bulk_disable_unprepare(dart->num_clks, dart->clks);
 
 	return ret;
