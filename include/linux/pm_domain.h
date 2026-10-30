@@ -127,7 +127,6 @@ struct dev_pm_domain_list {
  *				for power domains which are active at boot and
  *				must not be shut down until all consumers
  *				complete their probe sequence.
-
  */
 #define GENPD_FLAG_PM_CLK	 (1U << 0)
 #define GENPD_FLAG_IRQ_SAFE	 (1U << 1)

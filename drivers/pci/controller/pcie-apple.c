@@ -33,8 +33,8 @@
 
 #include "pci-host-common.h"
 
-static int link_up_timeout = 500;
-module_param(link_up_timeout, int, 0644);
+static unsigned int link_up_timeout = 500;
+module_param(link_up_timeout, uint, 0644);
 MODULE_PARM_DESC(link_up_timeout, "PCIe link training timeout in milliseconds");
 
 /* T8103 (original M1) and related SoCs */
@@ -608,8 +608,10 @@ static int apple_pcie_setup_link(struct apple_pcie *pcie,
 	for (u32 idx = 0; idx < num_aux_resets; idx++)
 		gpiod_set_value_cansleep(aux_reset[idx], 1);
 
-	/* Power on the device if required */
-	gpiod_set_value_cansleep(pwren, 1);
+	/* Power on the device if required; the line was requested as-is */
+	ret = gpiod_direction_output(pwren, 1);
+	if (ret)
+		return ret;
 
 	ret = apple_pcie_setup_refclk(pcie, port);
 	if (ret < 0)
@@ -733,13 +735,13 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 		/* start link training */
 		writel_relaxed(PORT_LTSSMCTL_START, port->base + PORT_LTSSMCTL);
 
-		timeout = link_up_timeout * HZ / 1000;
+		timeout = msecs_to_jiffies(link_up_timeout);
 		left = wait_for_completion_timeout(&pcie->event, timeout);
 		if (!left)
 			dev_warn(pcie->dev, "%pOF link didn't come up\n", np);
 		else
-			dev_info(pcie->dev, "%pOF link up after %ldms\n", np,
-				 (timeout - left) * 1000 / HZ);
+			dev_info(pcie->dev, "%pOF link up after %ums\n", np,
+				 jiffies_to_msecs(timeout - left));
 
 	}
 
