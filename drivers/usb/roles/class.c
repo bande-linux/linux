@@ -79,18 +79,16 @@ int usb_role_switch_set_role(struct usb_role_switch *sw, enum usb_role role)
 	if (IS_ERR_OR_NULL(sw))
 		return 0;
 
+	guard(mutex)(&sw->lock);
+
 	if (!sw->registered)
 		return -EOPNOTSUPP;
-
-	mutex_lock(&sw->lock);
 
 	ret = sw->set(sw, role);
 	if (!ret) {
 		sw->role = role;
 		kobject_uevent(&sw->dev.kobj, KOBJ_CHANGE);
 	}
-
-	mutex_unlock(&sw->lock);
 
 	return ret;
 }
@@ -107,12 +105,14 @@ enum usb_role usb_role_switch_get_role(struct usb_role_switch *sw)
 {
 	enum usb_role role;
 
-	if (IS_ERR_OR_NULL(sw) || !sw->registered)
+	if (IS_ERR_OR_NULL(sw))
 		return USB_ROLE_NONE;
 
 	mutex_lock(&sw->lock);
 
-	if (sw->get)
+	if (!sw->registered)
+		role = USB_ROLE_NONE;
+	else if (sw->get)
 		role = sw->get(sw);
 	else
 		role = sw->role;
@@ -423,7 +423,15 @@ void usb_role_switch_unregister(struct usb_role_switch *sw)
 {
 	if (IS_ERR_OR_NULL(sw))
 		return;
+
+	/*
+	 * Once this returns no ->set() or ->get() call is running and none
+	 * will start, so the caller may free what they use.
+	 */
+	mutex_lock(&sw->lock);
 	sw->registered = false;
+	mutex_unlock(&sw->lock);
+
 	if (dev_fwnode(&sw->dev))
 		component_del(&sw->dev, &connector_ops);
 	device_unregister(&sw->dev);

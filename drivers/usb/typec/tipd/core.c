@@ -163,6 +163,7 @@ struct tipd_data {
 	bool (*read_power_status)(struct tps6598x *tps);
 	int (*reset)(struct tps6598x *tps);
 	int (*connect)(struct tps6598x *tps, u32 status);
+	const struct typec_operations *typec_ops;
 };
 
 struct tps6598x {
@@ -386,6 +387,13 @@ static int tps6598x_connect(struct tps6598x *tps, u32 status)
 
 static void tps6598x_disconnect(struct tps6598x *tps, u32 status)
 {
+	/*
+	 * Stop the USB controller before the mux goes to safe mode: on some
+	 * platforms (Apple ATC PHY) safe mode powers the PHY off, which must
+	 * not happen under a running host or gadget controller.
+	 */
+	tps6598x_set_data_role(tps, TPS_STATUS_TO_TYPEC_DATAROLE(status), false);
+
 	if (!IS_ERR(tps->partner))
 		typec_unregister_partner(tps->partner);
 	tps->partner = NULL;
@@ -394,7 +402,6 @@ static void tps6598x_disconnect(struct tps6598x *tps, u32 status)
 	typec_set_vconn_role(tps->port, TPS_STATUS_TO_TYPEC_VCONN(status));
 	typec_set_orientation(tps->port, TYPEC_ORIENTATION_NONE);
 	typec_set_mode(tps->port, TYPEC_STATE_SAFE);
-	tps6598x_set_data_role(tps, TPS_STATUS_TO_TYPEC_DATAROLE(status), false);
 
 	power_supply_changed(tps->psy);
 }
@@ -473,31 +480,39 @@ static int tps6598x_exec_cmd(struct tps6598x *tps, const char *cmd,
 				     out_len, out_data, 1000, 0);
 }
 
-static int tps6598x_dr_set(struct typec_port *port, enum typec_data_role role)
+static int tps6598x_dr_swap(struct tps6598x *tps, enum typec_data_role role, u32 *status)
 {
 	const char *cmd = (role == TYPEC_DEVICE) ? "SWUF" : "SWDF";
+	int ret;
+
+	lockdep_assert_held(&tps->lock);
+
+	ret = tps6598x_exec_cmd(tps, cmd, 0, NULL, 0, NULL);
+	if (ret)
+		return ret;
+
+	ret = tps6598x_read32(tps, TPS_REG_STATUS, status);
+	if (ret)
+		return ret;
+
+	if (role != TPS_STATUS_TO_TYPEC_DATAROLE(*status))
+		return -EPROTO;
+
+	return 0;
+}
+
+static int tps6598x_dr_set(struct typec_port *port, enum typec_data_role role)
+{
 	struct tps6598x *tps = typec_get_drvdata(port);
 	u32 status;
 	int ret;
 
 	mutex_lock(&tps->lock);
 
-	ret = tps6598x_exec_cmd(tps, cmd, 0, NULL, 0, NULL);
-	if (ret)
-		goto out_unlock;
+	ret = tps6598x_dr_swap(tps, role, &status);
+	if (!ret)
+		tps6598x_set_data_role(tps, role, true);
 
-	ret = tps6598x_read32(tps, TPS_REG_STATUS, &status);
-	if (ret)
-		goto out_unlock;
-
-	if (role != TPS_STATUS_TO_TYPEC_DATAROLE(status)) {
-		ret = -EPROTO;
-		goto out_unlock;
-	}
-
-	tps6598x_set_data_role(tps, role, true);
-
-out_unlock:
 	mutex_unlock(&tps->lock);
 
 	return ret;
@@ -631,6 +646,20 @@ static bool tps6598x_read_power_status(struct tps6598x *tps)
 	return true;
 }
 
+static bool cd321x_read_power_status(struct tps6598x *tps)
+{
+	if (!tps6598x_read_power_status(tps))
+		return false;
+
+	if (TPS_POWER_STATUS_PWROPMODE(tps->pwr_status) == TYPEC_PWR_MODE_PD &&
+	    tps6598x_read_partner_identity(tps)) {
+		dev_err(tps->dev, "failed to read partner identity\n");
+		tps->partner_identity = (struct usb_pd_identity) {0};
+	}
+
+	return true;
+}
+
 /*
  * TPS66993 deprecated Power_Status register (0x3F). BC1.2 is not supported
  * and the remaining bits are redundant with STATUS register (0x1A).
@@ -672,6 +701,56 @@ static void tps6598x_handle_plug_event(struct tps6598x *tps, u32 status)
 	}
 }
 
+static int cd321x_dp_pin_mode(u32 data_status, unsigned long *mode)
+{
+	switch (TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT(data_status)) {
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_A:
+		*mode = TYPEC_DP_STATE_A;
+		return 0;
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_B:
+		*mode = TYPEC_DP_STATE_B;
+		return 0;
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_C:
+		*mode = TYPEC_DP_STATE_C;
+		return 0;
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_D:
+		*mode = TYPEC_DP_STATE_D;
+		return 0;
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_E:
+		*mode = TYPEC_DP_STATE_E;
+		return 0;
+	case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_F:
+		*mode = TYPEC_DP_STATE_F;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+/* Would cd321x_typec_update_mode() change the mux state for @st? */
+static bool cd321x_typec_mode_changed(struct cd321x *cd321x, const struct cd321x_status *st)
+{
+	const struct typec_mux_state *cur = &cd321x->state;
+	unsigned long mode;
+
+	if (!(st->data_status & TPS_DATA_STATUS_DATA_CONNECTION))
+		return cur->mode != TYPEC_STATE_SAFE;
+
+	if (st->data_status & TPS_DATA_STATUS_DP_CONNECTION) {
+		if (cd321x_dp_pin_mode(st->data_status, &mode))
+			return false;
+		return cur->alt != cd321x->port_altmode_dp || cur->mode != mode;
+	}
+
+	if (st->data_status & TPS_DATA_STATUS_TBT_CONNECTION)
+		return cur->alt != cd321x->port_altmode_tbt || cur->mode != TYPEC_TBT_MODE;
+
+	if (st->data_status & CD321X_DATA_STATUS_USB4_CONNECTION)
+		return cur->alt || cur->mode != TYPEC_MODE_USB4;
+
+	return cur->alt || cur->mode != TYPEC_STATE_USB;
+}
+
 static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status *st)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
@@ -687,26 +766,7 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 		struct typec_displayport_data dp_data;
 		unsigned long mode;
 
-		switch (TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT(st->data_status)) {
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_A:
-			mode = TYPEC_DP_STATE_A;
-			break;
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_B:
-			mode = TYPEC_DP_STATE_B;
-			break;
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_C:
-			mode = TYPEC_DP_STATE_C;
-			break;
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_D:
-			mode = TYPEC_DP_STATE_D;
-			break;
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_E:
-			mode = TYPEC_DP_STATE_E;
-			break;
-		case TPS_DATA_STATUS_DP_SPEC_PIN_ASSIGNMENT_F:
-			mode = TYPEC_DP_STATE_F;
-			break;
-		default:
+		if (cd321x_dp_pin_mode(st->data_status, &mode)) {
 			dev_err(tps->dev, "Invalid DP pin assignment\n");
 			return;
 		}
@@ -798,7 +858,7 @@ static void cd321x_update_work(struct work_struct *work)
 	enum typec_orientation orientation = TYPEC_ORIENTATION_NONE;
 
 	if (usb_connection) {
-		if (tps->data_status & TPS_DATA_STATUS_USB_DATA_ROLE)
+		if (st.data_status & TPS_DATA_STATUS_USB_DATA_ROLE)
 			new_role = USB_ROLE_DEVICE;
 		else
 			new_role = USB_ROLE_HOST;
@@ -816,8 +876,18 @@ static void cd321x_update_work(struct work_struct *work)
 		 (is_pd && memcmp(&st.partner_identity,
 				  &cd321x->cur_partner_identity, sizeof(struct usb_pd_identity))));
 
-	/* If we are switching from an active role, transition to USB_ROLE_NONE first */
-	if (old_role != USB_ROLE_NONE && (new_role != old_role || was_disconnected))
+	/*
+	 * The USB controller must not run while the mux reconfigures the PHY,
+	 * and on some platforms (Apple ATC PHY) stopping the controller also
+	 * powers the PHY off. So stop an active role before any role or mux
+	 * change, and whenever it was stopped take the mux through safe mode
+	 * and set it up again before the new role starts.
+	 */
+	bool stop_role = old_role != USB_ROLE_NONE &&
+		(new_role != old_role || was_disconnected ||
+		 cd321x_typec_mode_changed(cd321x, &st));
+
+	if (stop_role)
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 
 	/* Process partner disconnection or change */
@@ -827,8 +897,8 @@ static void cd321x_update_work(struct work_struct *work)
 		tps->partner = NULL;
 	}
 
-	/* If there was a disconnection, set PHY to off */
-	if (!new_connected || was_disconnected) {
+	/* If there was a disconnection or the role was stopped, set PHY to off */
+	if (!new_connected || was_disconnected || stop_role) {
 		cd321x->state.alt = NULL;
 		cd321x->state.mode = TYPEC_STATE_SAFE;
 		cd321x->state.data = NULL;
@@ -854,8 +924,10 @@ static void cd321x_update_work(struct work_struct *work)
 		desc.usb_pd = is_pd;
 		desc.accessory = TYPEC_ACCESSORY_NONE; /* XXX: handle accessories */
 
-		if (desc.usb_pd)
-			desc.identity = &st.partner_identity;
+		if (desc.usb_pd) {
+			cd321x->cur_partner_identity = st.partner_identity;
+			desc.identity = &cd321x->cur_partner_identity;
+		}
 
 		tps->partner = typec_register_partner(tps->port, &desc);
 		if (IS_ERR(tps->partner)) {
@@ -863,10 +935,8 @@ static void cd321x_update_work(struct work_struct *work)
 			return;
 		}
 
-		if (desc.identity) {
+		if (desc.identity)
 			typec_partner_set_identity(tps->partner);
-			cd321x->cur_partner_identity = st.partner_identity;
-		}
 	}
 
 	/* Update the TypeC MUX/PHY state */
@@ -910,6 +980,33 @@ static int cd321x_connect(struct tps6598x *tps, u32 status)
 	return 0;
 }
 
+static int cd321x_dr_set(struct typec_port *port, enum typec_data_role role)
+{
+	struct tps6598x *tps = typec_get_drvdata(port);
+	u32 status;
+	int ret;
+
+	guard(mutex)(&tps->lock);
+
+	ret = tps6598x_dr_swap(tps, role, &status);
+	if (ret)
+		return ret;
+
+	if (!tps->data->read_data_status(tps))
+		return -EIO;
+
+	/*
+	 * Don't switch the USB role here: cd321x_update_work() stops the old
+	 * role and sets the mux up again before it starts the new one.
+	 */
+	return cd321x_connect(tps, status);
+}
+
+static const struct typec_operations cd321x_typec_ops = {
+	.dr_set = cd321x_dr_set,
+	.pr_set = tps6598x_pr_set,
+};
+
 static irqreturn_t cd321x_interrupt(int irq, void *data)
 {
 	struct tps6598x *tps = data;
@@ -934,16 +1031,9 @@ static irqreturn_t cd321x_interrupt(int irq, void *data)
 	if (!tps6598x_read_status(tps, &status))
 		goto err_unlock;
 
-	if (event & APPLE_CD_REG_INT_POWER_STATUS_UPDATE) {
+	if (event & APPLE_CD_REG_INT_POWER_STATUS_UPDATE)
 		if (!tps->data->read_power_status(tps))
 			goto err_unlock;
-		if (TPS_POWER_STATUS_PWROPMODE(tps->pwr_status) == TYPEC_PWR_MODE_PD) {
-			if (tps6598x_read_partner_identity(tps)) {
-				dev_err(tps->dev, "failed to read partner identity\n");
-				tps->partner_identity = (struct usb_pd_identity) {0};
-			}
-		}
-	}
 
 	if (event & APPLE_CD_REG_INT_DATA_STATUS_UPDATE)
 		if (!tps->data->read_data_status(tps))
@@ -1247,7 +1337,7 @@ tps6598x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 	typec_cap.pd_revision = 0x200;
 	typec_cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
 	typec_cap.driver_data = tps;
-	typec_cap.ops = &tps6598x_ops;
+	typec_cap.ops = tps->data->typec_ops ?: &tps6598x_ops;
 	typec_cap.fwnode = fwnode;
 
 	switch (TPS_SYSCONF_PORTINFO(conf)) {
@@ -2033,10 +2123,11 @@ static const struct tipd_data cd321x_data = {
 	.trace_status = trace_tps6598x_status,
 	.init = cd321x_init,
 	.read_data_status = cd321x_read_data_status,
-	.read_power_status = tps6598x_read_power_status,
+	.read_power_status = cd321x_read_power_status,
 	.reset = cd321x_reset,
 	.switch_power_state = cd321x_switch_power_state,
 	.connect = cd321x_connect,
+	.typec_ops = &cd321x_typec_ops,
 };
 
 static const struct tipd_data tps6598x_data = {
