@@ -155,7 +155,7 @@ static int macsmc_input_probe(struct platform_device *pdev)
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial lid state\n");
 		else
-			input_report_switch(smcin->input, SW_LID, val);
+			input_report_switch(smcin->input, SW_LID, !!val);
 	}
 
 	if (have_power) {
