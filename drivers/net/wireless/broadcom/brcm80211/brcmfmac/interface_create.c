@@ -218,13 +218,13 @@ static int brcmf_cfg80211_request_if(struct brcmf_if *ifp,
 	}
 	/* Either version one or version two */
 	err = brcmf_cfg80211_request_if_internal(
-		ifp, if_type, BRCMF_INTERFACE_CREATE_VER_2, macaddr);
+		ifp, BRCMF_INTERFACE_CREATE_VER_2, if_type, macaddr);
 	if (!err) {
 		brcmf_info("interface created (version 2)\n");
 		return 0;
 	}
 	err = brcmf_cfg80211_request_if_internal(
-		ifp, if_type, BRCMF_INTERFACE_CREATE_VER_1, macaddr);
+		ifp, BRCMF_INTERFACE_CREATE_VER_1, if_type, macaddr);
 	if (!err) {
 		brcmf_info("interface created (version 1)\n");
 		return 0;

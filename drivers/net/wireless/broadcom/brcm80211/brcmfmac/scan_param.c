@@ -125,6 +125,7 @@ brcmf_scan_param_get_prepped_struct_v1(struct brcmf_cfg80211_info *cfg,
 
 	/* Scan abort */
 	if (!request) {
+		length += sizeof(u16);
 		params_le->channel_num = cpu_to_le32(1);
 		params_le->channel_list[0] = cpu_to_le16(-1);
 		goto done;

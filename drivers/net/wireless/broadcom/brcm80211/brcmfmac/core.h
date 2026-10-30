@@ -98,6 +98,7 @@ struct brcmf_rev_info {
 };
 
 struct brcmf_pno_info;
+struct brcmu_d11inf;
 enum nl80211_band;
 /**
  * struct pno_struct_handler
@@ -111,7 +112,8 @@ struct pno_struct_handler {
 	u32 (*get_result_status)(void *data);
 	int (*validate_pfn_results)(void *data, u32 event_datalen);
 	u32 (*get_bucket_map)(void *data, int idx, struct brcmf_pno_info *pi);
-	int (*get_result_info)(void *data, int result_idx,
+	int (*get_result_info)(struct brcmu_d11inf *d11inf, void *data,
+			       int result_idx,
 			       u8 (*ssid)[IEEE80211_MAX_SSID_LEN], u8 *ssid_len,
 			       u8 *channel, enum nl80211_band *band);
 };

@@ -2007,10 +2007,10 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 
 	brcmf_fil_bsscfg_int_set(netdev_priv(ndev), "mfp", mfp);
 	offset += RSN_CAP_LEN;
-	if (mfp && (ie_len - offset >= RSN_PMKID_COUNT_LEN)) {
+	if (mfp && (offset + RSN_PMKID_COUNT_LEN <= ie_len)) {
 		pmkid_count = ie[offset] + (ie[offset + 1] << 8);
 		offset += RSN_PMKID_COUNT_LEN + (pmkid_count * WLAN_PMKID_LEN);
-		if (ie_len - offset >= WPA_IE_MIN_OUI_LEN) {
+		if (offset + WPA_IE_MIN_OUI_LEN <= ie_len) {
 			group_mgmt_cs = &ie[offset];
 			if (memcmp(group_mgmt_cs, RSN_OUI, TLV_OUI_LEN) == 0) {
 				brcmf_fil_bsscfg_data_set(ifp, "bip",
@@ -2319,24 +2319,24 @@ brcmf_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev,
 			  params->ssid_len);
 	join_params = drvr->join_param_handler.get_struct_for_connect(
 		cfg, &join_params_size, params);
-
-	if (join_params) {
-		err = brcmf_fil_bsscfg_data_set(ifp, "join", join_params,
-						join_params_size);
-
-		/* We only free the join parameters if we were successful.
-		 * Otherwise they are used to extract the fallback, below */
-		if (!err) {
-			kfree(join_params);
-			/* This is it. join command worked, we are done */
-			goto done;
-		}
-		/* For versions >= 1, this should have worked, so report the error */
-		if (drvr->join_param_handler.version >= 1) {
-			bphy_err(drvr, "Failed to use join iovar to join: %d\n",
-				 err);
-		}
+	if (!join_params) {
+		err = -ENOMEM;
+		goto done;
 	}
+
+	err = brcmf_fil_bsscfg_data_set(ifp, "join", join_params,
+					join_params_size);
+
+	/* We only free the join parameters if we were successful.
+	 * Otherwise they are used to extract the fallback, below */
+	if (!err) {
+		kfree(join_params);
+		/* This is it. join command worked, we are done */
+		goto done;
+	}
+	/* For versions >= 1, this should have worked, so report the error */
+	if (drvr->join_param_handler.version >= 1)
+		bphy_err(drvr, "Failed to use join iovar to join: %d\n", err);
 
 	/* Fallback to using WLC_SET_SSID approach, which just uses join_params parts of the structure */
 	fallback_join_params = drvr->join_param_handler.get_join_from_ext_join(
@@ -3225,7 +3225,6 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 	struct cfg80211_bss *bss;
 	enum nl80211_band band;
 	struct brcmu_chan ch;
-	u16 chanspec;
 	u16 channel;
 	u32 freq;
 	u16 notify_capability;
@@ -3239,17 +3238,16 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 		return -EINVAL;
 	}
 
-	chanspec = le16_to_cpu(bi->chanspec);
-	if (!bi->ctl_ch) {
-		ch.chspec = chanspec;
-		cfg->d11inf.decchspec(&ch);
+	/* Decode with the firmware's chanspec encoding (D11N or D11AC) */
+	ch.chspec = le16_to_cpu(bi->chanspec);
+	cfg->d11inf.decchspec(&ch);
+	if (!bi->ctl_ch)
 		bi->ctl_ch = ch.control_ch_num;
-	}
 	channel = bi->ctl_ch;
 
-	if (CHSPEC_IS6G(chanspec))
+	if (ch.band == BRCMU_CHAN_BAND_6G)
 		band = NL80211_BAND_6GHZ;
-	else if (CHSPEC_IS5G(chanspec))
+	else if (ch.band == BRCMU_CHAN_BAND_5G)
 		band = NL80211_BAND_5GHZ;
 	else
 		band = NL80211_BAND_2GHZ;
@@ -3794,8 +3792,8 @@ static s32 brcmf_notify_sched_scan_results(struct brcmf_if *ifp,
 		u8 ssid[IEEE80211_MAX_SSID_LEN];
 		u8 ssid_len;
 
-		drvr->pno_handler.get_result_info(data, i, &ssid, &ssid_len,
-						 &channel, &band);
+		drvr->pno_handler.get_result_info(&cfg->d11inf, data, i, &ssid,
+						 &ssid_len, &channel, &band);
 		brcmf_dbg(SCAN, "SSID:%.32s Channel:%d Band:%d\n", ssid,
 			  channel, band);
 		bucket_map |= drvr->pno_handler.get_bucket_map(data, i, cfg->pno);
@@ -3940,8 +3938,8 @@ static s32 brcmf_wowl_nd_results(struct brcmf_if *ifp,
 		return -EINVAL;
 	}
 
-	drvr->pno_handler.get_result_info(data, 0, &ssid, &ssid_len, &channel,
-					 &band);
+	drvr->pno_handler.get_result_info(&cfg->d11inf, data, 0, &ssid,
+					 &ssid_len, &channel, &band);
 	memcpy(cfg->wowl.nd->ssid.ssid, ssid, ssid_len);
 	cfg->wowl.nd->ssid.ssid_len = ssid_len;
 	cfg->wowl.nd->n_channels = 1;
@@ -7512,7 +7510,7 @@ static int brcmf_setup_wiphybands(struct brcmf_cfg80211_info *cfg)
 	u32 rxstreams = 0;
 	u32 txbf_bfe_cap = 0;
 	u32 txbf_bfr_cap = 0;
-	u8 he_enable;
+	u8 he_enable = 0;
 	struct brcmf_he_defcap he_cap;
 	u32 ldpc_cap = 0;
 	u32 stbc_rx = 0;
@@ -8648,7 +8646,7 @@ struct brcmf_cfg80211_info *brcmf_cfg80211_attach(struct brcmf_pub *drvr,
 	err = brcmf_setup_wiphybands(cfg);
 	if (err) {
 		bphy_err(drvr, "Setting wiphy bands failed (%d)\n", err);
-		goto wiphy_unreg_out;
+		goto priv_out;
 	}
 
 	err = wiphy_register(wiphy);

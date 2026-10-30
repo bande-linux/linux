@@ -1045,9 +1045,15 @@ static void brcmf_pcie_bus_console_read(struct brcmf_pciedev_info *devinfo,
 }
 
 
-static void brcmf_pcie_intr_disable(struct brcmf_pciedev_info *devinfo)
+static void brcmf_pcie_intr_mask(struct brcmf_pciedev_info *devinfo)
 {
 	brcmf_pcie_write_pcie32(devinfo, devinfo->reginfo->mailboxmask, 0);
+}
+
+
+static void brcmf_pcie_intr_disable(struct brcmf_pciedev_info *devinfo)
+{
+	brcmf_pcie_intr_mask(devinfo);
 
 	devinfo->irq_ready = false;
 }
@@ -1077,7 +1083,10 @@ static irqreturn_t brcmf_pcie_quick_check_isr(int irq, void *arg)
 	struct brcmf_pciedev_info *devinfo = (struct brcmf_pciedev_info *)arg;
 
 	if (brcmf_pcie_read_pcie32(devinfo, devinfo->reginfo->mailboxint)) {
-		brcmf_pcie_intr_disable(devinfo);
+		/* Only mask here: irq_ready gates the thread, which must
+		 * still service the doorbell that raised this interrupt.
+		 */
+		brcmf_pcie_intr_mask(devinfo);
 		brcmf_dbg(PCIE, "Enter\n");
 		return IRQ_WAKE_THREAD;
 	}
@@ -2545,8 +2554,12 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
 	 */
 	brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
 	ret = brcmf_pcie_request_irq(devinfo);
-	if (ret)
+	if (ret) {
+		release_firmware(fw);
+		release_firmware(fwsig);
+		brcmf_fw_nvram_free(nvram);
 		goto fail;
+	}
 
 	ret = brcmf_pcie_download_fw_nvram(devinfo, fw, fwsig, nvram, nvram_len);
 	if (ret)
