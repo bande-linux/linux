@@ -465,7 +465,7 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 	if (max <= 0 || max > mc->max - mc->min)
 		return -EINVAL;
 	mc->platform_max = max;
-	return snd_soc_clip_to_platform_max(kctl);
+	return 0;
 }
 
 /**
@@ -486,6 +486,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 {
 	struct snd_kcontrol *kctl;
 	int hits = 0;
+	int err = 0;
 	int ret;
 
 	/* Sanity check for name */
@@ -497,10 +498,22 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 			continue;
 
 		ret = soc_limit_volume(kctl, max);
-		if (ret < 0)
-			return ret;
+		if (ret < 0 && !err)
+			err = ret;
 		hits++;
 	}
+
+	list_for_each_entry(kctl, &card->snd_card->controls, list) {
+		if (!snd_soc_control_matches(kctl, name))
+			continue;
+
+		ret = snd_soc_clip_to_platform_max(kctl);
+		if (ret < 0 && !err)
+			err = ret;
+	}
+
+	if (err)
+		return err;
 
 	if (!hits) {
 		/* Some cards blindly add limits for multiple variants. */
