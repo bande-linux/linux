@@ -144,14 +144,10 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	smcin->input->phys = "macsmc-input (0)";
 	smcin->input->name = "Apple SMC power/lid events";
 
-	if (have_lid)
-		input_set_capability(smcin->input, EV_SW, SW_LID);
-	if (have_power)
-		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
-
 	if (have_lid) {
 		u8 val;
 
+		input_set_capability(smcin->input, EV_SW, SW_LID);
 		error = apple_smc_read_u8(smc, SMC_KEY(MSLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial lid state\n");
@@ -162,6 +158,7 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	if (have_power) {
 		u32 val;
 
+		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
 		error = apple_smc_read_u32(smc, SMC_KEY(bHLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial power button state\n");
