@@ -8,11 +8,13 @@
  */
 
 #include <linux/device.h>
+#include <linux/devm-helpers.h>
 #include <linux/input.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
 #include <linux/reboot.h>
+#include <linux/workqueue.h>
 
 /**
  * struct macsmc_input
@@ -20,6 +22,7 @@
  * @smc: Pointer to apple_smc struct of the mfd parent
  * @input: Allocated input_dev; devres managed
  * @nb: Notifier block used for incoming events from SMC (e.g. button pressed down)
+ * @poweroff_work: Emergency power off, run outside the SMC event worker
  * @wakeup_mode: Set to true when system is suspended and power button events should wake it
  */
 struct macsmc_input {
@@ -27,6 +30,7 @@ struct macsmc_input {
 	struct apple_smc *smc;
 	struct input_dev *input;
 	struct notifier_block nb;
+	struct work_struct poweroff_work;
 	bool wakeup_mode;
 };
 
@@ -37,6 +41,19 @@ struct macsmc_input {
 #define BTN_TOUCHID		0x06 /* combined TouchID / power button on MacBooks pressed */
 #define BTN_POWER_HELD_SHORT	0xfe /* power button briefly held down */
 #define BTN_POWER_HELD_LONG	0x00 /* power button held down; sent just before forced poweroff */
+
+static void macsmc_input_poweroff_work(struct work_struct *work)
+{
+	/* The kernel is already shutting down (reboot(2)): let it finish */
+	if (system_state == SYSTEM_HALT || system_state == SYSTEM_POWER_OFF ||
+	    system_state == SYSTEM_RESTART)
+		return;
+
+	if (kernel_can_power_off())
+		kernel_power_off();
+	else /* Missing macsmc-reboot driver? */
+		kernel_restart("SMC power button triggered restart");
+}
 
 static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long event)
 {
@@ -65,13 +82,14 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 		 * we have about 4 seconds before forced power-off is triggered by SMC.
 		 * Try to do an emergency shutdown to make sure the NVMe cache is
 		 * flushed. macOS actually does this by panicing (!)...
+		 *
+		 * This runs in the SMC's RTKit receive worker, which must keep
+		 * running while devices shut down, so power off from a work item
+		 * of our own.
 		 */
 		if (state) {
 			dev_crit(smcin->dev, "Triggering forced shutdown!\n");
-			if (kernel_can_power_off())
-				kernel_power_off();
-			else /* Missing macsmc-reboot driver? */
-				kernel_restart("SMC power button triggered restart");
+			queue_work(system_unbound_wq, &smcin->poweroff_work);
 		}
 		break;
 	default:
@@ -126,6 +144,11 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	smcin->dev = &pdev->dev;
 	smcin->smc = smc;
 	platform_set_drvdata(pdev, smcin);
+
+	error = devm_work_autocancel(&pdev->dev, &smcin->poweroff_work,
+				     macsmc_input_poweroff_work);
+	if (error)
+		return error;
 
 	smcin->input = devm_input_allocate_device(&pdev->dev);
 	if (!smcin->input)
