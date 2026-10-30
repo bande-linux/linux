@@ -171,10 +171,10 @@ static char *parse_string(struct dcp_parse_ctx *handle)
 	if (IS_ERR(in))
 		return (void *)in;
 
-	out = kmalloc(tag->size + 1, GFP_KERNEL);
+	out = kmemdup_nul(in, tag->size, GFP_KERNEL);
+	if (!out)
+		return ERR_PTR(-ENOMEM);
 
-	memcpy(out, in, tag->size);
-	out[tag->size] = '\0';
 	return out;
 }
 
