@@ -2554,8 +2554,12 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
 	 */
 	brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
 	ret = brcmf_pcie_request_irq(devinfo);
-	if (ret)
+	if (ret) {
+		release_firmware(fw);
+		release_firmware(fwsig);
+		brcmf_fw_nvram_free(nvram);
 		goto fail;
+	}
 
 	ret = brcmf_pcie_download_fw_nvram(devinfo, fw, fwsig, nvram, nvram_len);
 	if (ret)
