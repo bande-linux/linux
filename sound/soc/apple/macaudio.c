@@ -1015,6 +1015,9 @@ static int macaudio_be_assign_tdm(struct snd_soc_pcm_runtime *rtd)
 		if (props->codecs[i].idle_mode) {
 			ret = snd_soc_dai_set_tdm_idle(dai, props->codecs[i].idle_mask,
 						       0, props->codecs[i].idle_mode, 0);
+			if (ret)
+				dev_warn(card->dev, "%s: failed to set TDM idle mode: %d\n",
+					 dai->name, ret);
 		}
 	}
 
