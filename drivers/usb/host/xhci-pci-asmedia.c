@@ -9,6 +9,7 @@
 #include <linux/firmware.h>
 #include <linux/pci.h>
 #include <linux/iopoll.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 
@@ -277,7 +278,7 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 {
 	struct usb_hcd *hcd;
 	void __iomem *regs;
-	const u16 *fw_data = (const u16 *)fw->data;
+	const u8 *fw_data = fw->data;
 	u16 raddr;
 	u32 data;
 	size_t index = 0, addr = 0;
@@ -286,6 +287,12 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 
 	hcd = dev_get_drvdata(&pdev->dev);
 	regs = hcd->regs;
+
+	/* The upload is in whole words and the SRAM address register is 16 bits */
+	if (!fw->size || fw->size % 2 || fw->size > SZ_128K) {
+		dev_err(&pdev->dev, "Invalid firmware size %zu\n", fw->size);
+		return -EINVAL;
+	}
 
 	ret = asmedia_write_reg(hcd, ASMT_MMIO_CPU_MODE_NEXT,
 				ASMT_MMIO_CPU_MODE_HALFSPEED, false);
@@ -319,9 +326,9 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 	/* The firmware upload is interleaved in 0x4000 word blocks */
 	addr = index = 0;
 	while (index < words) {
-		data = fw_data[index];
+		data = get_unaligned_le16(&fw_data[index * 2]);
 		if ((index | 0x4000) < words)
-			data |= fw_data[index | 0x4000] << 16;
+			data |= (u32)get_unaligned_le16(&fw_data[(index | 0x4000) * 2]) << 16;
 
 		pci_write_config_word(pdev, ASMT_CFG_SRAM_ADDR,
 				      addr);
