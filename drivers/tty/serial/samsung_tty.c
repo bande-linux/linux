@@ -2107,6 +2107,15 @@ static int __maybe_unused s3c24xx_serial_suspend(struct device *dev)
 
 	uart_suspend_port(&s3c24xx_uart_drv, port);
 
+	/*
+	 * The PM core holds a runtime PM reference across system sleep, so
+	 * the pm_runtime_put_sync() in s3c24xx_serial_pm() cannot gate the
+	 * clocks. Do it here unless the port is kept powered (console with
+	 * no_console_suspend, or a wakeup source).
+	 */
+	if (to_ourport(port)->pm_level == UART_PM_STATE_OFF)
+		return pm_runtime_force_suspend(dev);
+
 	return 0;
 }
 
@@ -2116,6 +2125,13 @@ static int __maybe_unused s3c24xx_serial_resume(struct device *dev)
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 
 	if (port) {
+		if (ourport->pm_level == UART_PM_STATE_OFF) {
+			int ret = pm_runtime_force_resume(dev);
+
+			if (ret)
+				return ret;
+		}
+
 		clk_prepare_enable(ourport->clk);
 		if (!IS_ERR(ourport->baudclk))
 			clk_prepare_enable(ourport->baudclk);
