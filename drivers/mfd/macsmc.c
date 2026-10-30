@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/ioport.h>
 #include <linux/math.h>
 #include <linux/mfd/core.h>
@@ -43,6 +44,7 @@
 #define SMC_RESULT			SMC_MSG
 
 #define SMC_TIMEOUT_MS		500
+#define SMC_ATOMIC_POLL_DELAY_US	100
 
 static const struct mfd_cell apple_smc_devs[] = {
 	MFD_CELL_NAME("macsmc-input"),
@@ -247,6 +249,7 @@ int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, 
 {
 	guard(spinlock_irqsave)(&smc->lock);
 	u8 result;
+	int poll_ret;
 	int ret;
 	u64 msg;
 
@@ -272,13 +275,16 @@ int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, 
 		return ret;
 	}
 
-	while (smc->atomic_pending) {
-		ret = apple_rtkit_poll(smc->rtk);
-		if (ret < 0) {
-			dev_err(smc->dev, "RTKit poll failed (%llx)", msg);
-			return ret;
-		}
-		udelay(100);
+	ret = read_poll_timeout_atomic(apple_rtkit_poll, poll_ret,
+				       poll_ret < 0 || !smc->atomic_pending,
+				       SMC_ATOMIC_POLL_DELAY_US,
+				       SMC_TIMEOUT_MS * USEC_PER_MSEC, false,
+				       smc->rtk);
+	if (!ret && poll_ret < 0)
+		ret = poll_ret;
+	if (ret) {
+		dev_err(smc->dev, "Atomic command failed (%llx): %pe\n", msg, ERR_PTR(ret));
+		return ret;
 	}
 
 	if (FIELD_GET(SMC_ID, smc->cmd_ret) != smc->msg_id) {
