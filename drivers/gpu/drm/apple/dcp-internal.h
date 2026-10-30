@@ -141,6 +141,7 @@ struct apple_dcp {
 
 	/* DCP shared memory */
 	void *shmem;
+	dma_addr_t shmem_iova;
 
 	/* Display registers mappable to the DCP */
 	struct resource *disp_registers[MAX_DISP_REGISTERS];

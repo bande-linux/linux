@@ -1104,6 +1104,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
+	int ret;
 
 	if (!dcp)
 		return;
@@ -1141,6 +1142,20 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 
 	if (dcp->shmem)
 		iomfb_shutdown(dcp);
+
+	/* The bootloader hands the DCP over quiesced (m1n1 display_shutdown()) */
+	if (!dcp->crashed && apple_rtkit_is_running(dcp->rtk)) {
+		ret = apple_rtkit_quiesce(dcp->rtk);
+		if (ret)
+			dev_err(dev, "failed to quiesce RTKit: %d\n", ret);
+	}
+	devm_apple_rtkit_free(dev, dcp->rtk);
+	dcp->rtk = NULL;
+
+	if (dcp->shmem) {
+		dma_free_coherent(dev, DCP_SHMEM_SIZE, dcp->shmem, dcp->shmem_iova);
+		dcp->shmem = NULL;
+	}
 
 	if (dcp->piodma) {
 		dcp->iommu_dom = NULL;

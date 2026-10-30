@@ -1487,6 +1487,20 @@ void DCP_FW_NAME(iomfb_shutdown)(struct apple_dcp *dcp)
 	struct dcp_set_power_state_req req = {
 		/* defaults are ok */
 	};
+	struct dcp_wait_cookie *cookie;
+	int ret;
 
-	dcp_set_power_state(dcp, false, &req, NULL, NULL);
+	cookie = kzalloc_obj(*cookie);
+	if (!cookie)
+		return;
+	init_completion(&cookie->done);
+	kref_init(&cookie->refcount);
+	kref_get(&cookie->refcount);
+
+	dcp_set_power_state(dcp, false, &req, complete_set_powerstate, cookie);
+	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(1000));
+	if (ret == 0)
+		dev_warn(dcp->dev, "setPowerState(0) on shutdown timed out\n");
+
+	kref_put(&cookie->refcount, release_wait_cookie);
 }
