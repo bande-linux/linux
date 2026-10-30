@@ -172,6 +172,20 @@ static void dwc3_apple_set_ptrcap(struct dwc3_apple *appledwc, u32 mode)
 	dwc3_set_prtcap(&appledwc->dwc, mode, false);
 }
 
+/*
+ * Switching dwc3's PIPE interface to the USB3 PHY can fail, for example if the PHY was not
+ * configured for a USB3 capable mode. dwc3 then keeps working over USB2 only, so carry on but
+ * don't hide it.
+ */
+static void dwc3_apple_set_usb3_phy_mode(struct dwc3_apple *appledwc, enum phy_mode mode)
+{
+	int ret;
+
+	ret = phy_set_mode(appledwc->dwc.usb3_generic_phy[0], mode);
+	if (ret)
+		dev_warn(appledwc->dev, "Failed to set up USB3 PHY, USB2 only: err=%d\n", ret);
+}
+
 static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 {
 	struct dwc3_probe_data probe_data = {};
@@ -237,14 +251,18 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 	 */
 	switch (state) {
 	case DWC3_APPLE_HOST:
-		phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_HOST);
+		ret = phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_HOST);
 		break;
 	case DWC3_APPLE_DEVICE:
-		phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_DEVICE);
+		ret = phy_set_mode(appledwc->usb2_phy, PHY_MODE_USB_DEVICE);
 		break;
 	default:
 		/* Unreachable unless there's a bug in this driver */
 		return -EINVAL;
+	}
+	if (ret) {
+		dev_err(appledwc->dev, "Failed to set USB2 PHY mode, err=%d\n", ret);
+		return ret;
 	}
 
 	ret = reset_control_deassert(appledwc->reset);
@@ -273,7 +291,7 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 		 * has already been configured to the correct mode earlier.
 		 */
 		dwc3_enable_susphy(&appledwc->dwc, true);
-		phy_set_mode(appledwc->dwc.usb3_generic_phy[0], PHY_MODE_USB_HOST);
+		dwc3_apple_set_usb3_phy_mode(appledwc, PHY_MODE_USB_HOST);
 		ret = dwc3_host_init(&appledwc->dwc);
 		if (ret) {
 			dev_err(appledwc->dev, "Failed to initialize host, ret=%d\n", ret);
@@ -290,7 +308,7 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 		 * has already been configured to the correct mode earlier.
 		 */
 		dwc3_enable_susphy(&appledwc->dwc, true);
-		phy_set_mode(appledwc->dwc.usb3_generic_phy[0], PHY_MODE_USB_DEVICE);
+		dwc3_apple_set_usb3_phy_mode(appledwc, PHY_MODE_USB_DEVICE);
 		ret = dwc3_gadget_init(&appledwc->dwc);
 		if (ret) {
 			dev_err(appledwc->dev, "Failed to initialize gadget, ret=%d\n", ret);
