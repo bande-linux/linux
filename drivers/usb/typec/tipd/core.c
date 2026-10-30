@@ -744,6 +744,18 @@ static int cd321x_typec_target_mode(struct cd321x *cd321x, const struct cd321x_s
 	return 0;
 }
 
+/* Would cd321x_typec_update_mode() reconfigure the mux for @st? */
+static bool cd321x_typec_mode_changed(struct cd321x *cd321x, const struct cd321x_status *st)
+{
+	struct typec_altmode *alt;
+	unsigned long mode;
+
+	if (cd321x_typec_target_mode(cd321x, st, &alt, &mode))
+		return false;
+
+	return cd321x->state.alt != alt || cd321x->state.mode != mode;
+}
+
 static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status *st)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
@@ -842,8 +854,18 @@ static void cd321x_update_work(struct work_struct *work)
 		 (is_pd && memcmp(&st.partner_identity,
 				  &cd321x->cur_partner_identity, sizeof(struct usb_pd_identity))));
 
-	/* If we are switching from an active role, transition to USB_ROLE_NONE first */
-	if (old_role != USB_ROLE_NONE && (new_role != old_role || was_disconnected))
+	/*
+	 * The USB controller must not run while the mux reconfigures the PHY,
+	 * and on Apple silicon stopping the controller also powers the PHY
+	 * off. So stop an active role before any role or mux change, and
+	 * whenever it was stopped take the mux through safe mode so that it is
+	 * set up again before the new role starts.
+	 */
+	bool stop_role = old_role != USB_ROLE_NONE &&
+		(new_role != old_role || was_disconnected ||
+		 cd321x_typec_mode_changed(cd321x, &st));
+
+	if (stop_role)
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 
 	/* Process partner disconnection or change */
@@ -853,8 +875,8 @@ static void cd321x_update_work(struct work_struct *work)
 		tps->partner = NULL;
 	}
 
-	/* If there was a disconnection, set PHY to off */
-	if (!new_connected || was_disconnected) {
+	/* If there was a disconnection or the role was stopped, set PHY to off */
+	if (!new_connected || was_disconnected || stop_role) {
 		cd321x->state.alt = NULL;
 		cd321x->state.mode = TYPEC_STATE_SAFE;
 		cd321x->state.data = NULL;
