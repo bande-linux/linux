@@ -263,6 +263,7 @@ struct apple_dcp {
 
 	struct mutex power_mutex;
 	bool powered;
+	bool client_open;
 	struct completion timings_done;
 
 	u32 dptx_phy;
