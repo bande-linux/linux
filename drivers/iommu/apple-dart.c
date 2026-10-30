@@ -433,6 +433,10 @@ apple_dart_hw_map_locked_ttbr(struct apple_dart_stream_map *stream_map, u8 idx)
 		phys_addr_t phys;
 		u64 *l1_tbl;
 
+		/* already mapped by an earlier attach of this stream */
+		if (dart->locked_ttbr[sid][idx])
+			continue;
+
 		ttbr = readl(dart->regs + DART_TTBR(dart, sid, idx));
 
 		if (!(ttbr & dart->hw->ttbr_valid)) {
