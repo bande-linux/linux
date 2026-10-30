@@ -857,7 +857,7 @@ static void mca_be_shutdown(struct snd_pcm_substream *substream,
 
 	if (cl->clocks_in_use[substream->stream] &&
 		!WARN_ON(cl->port_clk_driver < 0)) {
-		struct mca_cluster *fe_cl = &mca->clusters[cl->port_clk_driver];
+		struct mca_cluster *clk_cl = &mca->clusters[cl->port_clk_driver];
 
 		/*
 		 * Typically the CODECs we are paired with will require clocks
@@ -871,8 +871,8 @@ static void mca_be_shutdown(struct snd_pcm_substream *substream,
 		 */
 		cl->clocks_in_use[substream->stream] = false;
 
-		if (!mca_fe_clocks_in_use(fe_cl))
-			mca_fe_disable_clocks(fe_cl);
+		if (!mca_fe_clocks_in_use(clk_cl))
+			mca_fe_disable_clocks(clk_cl);
 	}
 
 	if (!fe)
