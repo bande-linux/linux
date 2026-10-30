@@ -100,6 +100,8 @@ bool msi_lib_init_dev_msi_info(struct device *dev, struct irq_domain *domain,
 		chip->irq_eoi = irq_chip_eoi_parent;
 	if (!chip->irq_ack && (pops->chip_flags & MSI_CHIP_FLAG_SET_ACK))
 		chip->irq_ack = irq_chip_ack_parent;
+	if (!chip->irq_set_wake && (pops->chip_flags & MSI_CHIP_FLAG_SET_WAKE))
+		chip->irq_set_wake = irq_chip_set_wake_parent;
 
 	/*
 	 * The device MSI domain can never have a set affinity callback. It
