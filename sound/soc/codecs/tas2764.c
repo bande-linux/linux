@@ -816,7 +816,16 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 	if (tas2764->i_sense_slot != -1 && tas2764->v_sense_slot != -1) {
 		ret = tas2764_set_ivsense_transmit(tas2764, tas2764->i_sense_slot,
 						   tas2764->v_sense_slot);
+		if (ret < 0)
+			goto err_disable_reg;
+	} else {
+		ret = snd_soc_component_update_bits(component, TAS2764_TDM_CFG5,
+						    TAS2764_TDM_CFG5_VSNS_ENABLE, 0);
+		if (ret < 0)
+			goto err_disable_reg;
 
+		ret = snd_soc_component_update_bits(component, TAS2764_TDM_CFG6,
+						    TAS2764_TDM_CFG6_ISNS_ENABLE, 0);
 		if (ret < 0)
 			goto err_disable_reg;
 	}
