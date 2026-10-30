@@ -609,7 +609,9 @@ static int apple_pcie_setup_link(struct apple_pcie *pcie,
 		gpiod_set_value_cansleep(aux_reset[idx], 1);
 
 	/* Power on the device if required */
-	gpiod_set_value_cansleep(pwren, 1);
+	ret = gpiod_direction_output(pwren, 1);
+	if (ret)
+		return ret;
 
 	ret = apple_pcie_setup_refclk(pcie, port);
 	if (ret < 0)
