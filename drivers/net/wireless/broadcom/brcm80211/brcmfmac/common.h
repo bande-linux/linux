@@ -61,6 +61,7 @@ struct brcmf_mp_device {
 	} bus;
 };
 
+int brcmf_c_set_joinpref(struct brcmf_if *ifp);
 void brcmf_c_set_joinpref_default(struct brcmf_if *ifp);
 
 struct brcmf_mp_device *brcmf_get_module_param(struct device *dev,

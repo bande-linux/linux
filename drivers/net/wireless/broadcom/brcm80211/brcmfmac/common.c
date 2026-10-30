@@ -21,6 +21,7 @@
 #include "of.h"
 #include "firmware.h"
 #include "chip.h"
+#include "feature.h"
 
 MODULE_AUTHOR("Broadcom Corporation");
 MODULE_DESCRIPTION("Broadcom 802.11 wireless LAN fullmac driver.");
@@ -78,11 +79,9 @@ MODULE_PARM_DESC(ignore_probe_fail, "always succeed probe for debugging");
 static struct brcmfmac_platform_data *brcmfmac_pdata;
 struct brcmf_mp_global_t brcmf_mp_global;
 
-void brcmf_c_set_joinpref_default(struct brcmf_if *ifp)
+int brcmf_c_set_joinpref(struct brcmf_if *ifp)
 {
-	struct brcmf_pub *drvr = ifp->drvr;
 	struct brcmf_join_pref_params join_pref_params[2];
-	int err;
 
 	/* Setup join_pref to select target by RSSI (boost on 5GHz) */
 	join_pref_params[0].type = BRCMF_JOIN_PREF_RSSI_DELTA;
@@ -94,10 +93,20 @@ void brcmf_c_set_joinpref_default(struct brcmf_if *ifp)
 	join_pref_params[1].len = 2;
 	join_pref_params[1].rssi_gain = 0;
 	join_pref_params[1].band = 0;
-	err = brcmf_fil_iovar_data_set(ifp, "join_pref", join_pref_params,
-				       sizeof(join_pref_params));
+	return brcmf_fil_iovar_data_set(ifp, "join_pref", join_pref_params,
+					sizeof(join_pref_params));
+}
+
+void brcmf_c_set_joinpref_default(struct brcmf_if *ifp)
+{
+	int err;
+
+	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF))
+		return;
+
+	err = brcmf_c_set_joinpref(ifp);
 	if (err)
-		bphy_err(drvr, "Set join_pref error (%d)\n", err);
+		bphy_err(ifp->drvr, "Set join_pref error (%d)\n", err);
 }
 
 static int brcmf_c_download(struct brcmf_if *ifp, u16 flag,
@@ -408,8 +417,6 @@ int brcmf_c_preinit_dcmds(struct brcmf_if *ifp)
 		bphy_err(drvr, "failed setting mpc\n");
 		goto done;
 	}
-
-	brcmf_c_set_joinpref_default(ifp);
 
 	/* Setup default scan channel time */
 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_CHANNEL_TIME,

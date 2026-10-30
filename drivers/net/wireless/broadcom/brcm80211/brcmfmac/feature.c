@@ -363,6 +363,9 @@ int brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_iovar_int_get(ifp, BRCMF_FEAT_FWSUP, "sup_wpa");
 
+	if (!brcmf_c_set_joinpref(ifp))
+		ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF);
+
 	err = brcmf_fil_iovar_data_get(ifp, "join_ver", &join_ver, sizeof(join_ver));
 	if (!err) {
 		u16 ver = le16_to_cpu(join_ver.join_ver_major);
