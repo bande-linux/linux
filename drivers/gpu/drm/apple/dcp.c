@@ -381,6 +381,8 @@ static int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 
 	reinit_completion(&dcp->dptxport[port].linkcfg_completion);
 	reinit_completion(&dcp->timings_done);
+	dcp->connect_seq = READ_ONCE(dcp->publish_seq);
+	dcp->dptxport[port].not_responding = false;
 	dcp->dptxport[port].atcphy = dcp->phy;
 	dptxport_connect(dcp->dptxport[port].service, 0, dcp->dptx_phy, dcp->dptx_die);
 	dptxport_request_display(dcp->dptxport[port].service);
@@ -790,9 +792,18 @@ void dcp_poweron(struct platform_device *pdev)
 		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
 		dev_info(dcp->dev, "%s: DP2HDMI HPD connected:%d\n", __func__, connected);
 
-		if (connected && !dcp->dptxport[0].connected &&
-		    !dcp_dptx_connect(dcp, 0) &&
-		    !wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT))
+		/*
+		 * After s2idle the DCP called DeviceNotResponding and failed
+		 * prepareLink() for the requested display (j473).
+		 */
+		if (connected && dcp->dptxport[0].not_responding)
+			dcp_dptx_disconnect(dcp, 0);
+		if (connected && !dcp->dptxport[0].connected)
+			dcp_dptx_connect(dcp, 0);
+		if (connected && dcp->dptxport[0].connected &&
+		    !wait_var_event_timeout(&dcp->publish_seq,
+					    READ_ONCE(dcp->publish_seq) != dcp->connect_seq,
+					    DCP_TIMINGS_TIMEOUT))
 			dev_err(dcp->dev, "display not published before modeset\n");
 	}
 
@@ -1501,6 +1512,7 @@ static int dcp_platform_suspend(struct device *dev)
 	if (dcp->hdmi_hpd_irq) {
 		disable_irq(dcp->hdmi_hpd_irq);
 		dcp_stop_hpd_work(dcp);
+		dcp_dptx_disconnect(dcp, 0);
 	}
 	/*
 	 * Set the device as a wakeup device, which forces its power

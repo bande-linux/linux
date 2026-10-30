@@ -553,6 +553,12 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
         case DPTX_APCALL_ACTIVATE:
 		return dptxport_call_activate(service, data, data_size,
 					      reply, reply_size);
+	case DPTX_APCALL_DEVICE_NOT_RESPONDING:
+		dptx->not_responding = true;
+		memcpy(reply, data, min(reply_size, data_size));
+		if (reply_size >= 4)
+			memset(reply, 0, 4);
+		return 0;
 	case DPTX_APCALL_DEACTIVATE:
 		return dptxport_call_deactivate(service, data, data_size,
 						reply, reply_size);
