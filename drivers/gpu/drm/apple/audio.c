@@ -44,6 +44,7 @@ struct dcp_audio {
 	struct snd_pcm_substream *substream;
 	unsigned int open_cookie;
 
+	struct mutex report_lock;
 	struct mutex data_lock;
 	bool dcp_connected; /// dcp status keep for delayed initialization
 	bool connected;
@@ -588,18 +589,15 @@ void dcpaud_connect(struct platform_device *pdev, bool connected)
 {
 	struct dcp_audio *dcpaud = platform_get_drvdata(pdev);
 
+	mutex_lock(&dcpaud->report_lock);
 	mutex_lock(&dcpaud->data_lock);
-
 	dcpaud_report_hotplug(dcpaud, connected);
+	mutex_unlock(&dcpaud->report_lock);
 }
 
 void dcpaud_disconnect(struct platform_device *pdev)
 {
-	struct dcp_audio *dcpaud = platform_get_drvdata(pdev);
-
-	mutex_lock(&dcpaud->data_lock);
-
-	dcpaud_report_hotplug(dcpaud, false);
+	dcpaud_connect(pdev, false);
 }
 
 static int dcpaud_comp_bind(struct device *dev, struct device *main, void *data)
@@ -685,9 +683,18 @@ static void dcpaud_comp_unbind(struct device *dev, struct device *main,
 			       void *data)
 {
 	struct dcp_audio *dcpaud = dev_get_drvdata(dev);
+	struct snd_card *card;
+
+	mutex_lock(&dcpaud->report_lock);
+	mutex_lock(&dcpaud->data_lock);
+	card = dcpaud->card;
+	dcpaud->card = NULL;
+	dcpaud->connected = false;
+	mutex_unlock(&dcpaud->data_lock);
+	mutex_unlock(&dcpaud->report_lock);
 
 	/* snd_card_free_when_closed() checks for NULL */
-	snd_card_free_when_closed(dcpaud->card);
+	snd_card_free_when_closed(card);
 
 	if (dcpaud->dma_link)
 		device_link_del(dcpaud->dma_link);
@@ -717,6 +724,7 @@ static int dcpaud_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	dcpaud->dev = &pdev->dev;
+	mutex_init(&dcpaud->report_lock);
 	mutex_init(&dcpaud->data_lock);
 	platform_set_drvdata(pdev, dcpaud);
 
