@@ -795,6 +795,8 @@ static bool apple_nvme_delayed_flush(struct apple_nvme *anv, struct nvme_ns *ns,
 {
 	if (!anv->flush_interval || req_op(req) != REQ_OP_FLUSH)
 		return false;
+	if (nvme_ctrl_state(&anv->ctrl) != NVME_CTRL_LIVE)
+		return false;
 	if (delayed_work_pending(&anv->flush_dwork))
 		return true;
 	if (time_before(jiffies, anv->last_flush + anv->flush_interval)) {
@@ -1704,6 +1706,8 @@ static void apple_nvme_remove(struct platform_device *pdev)
 	struct apple_nvme *anv = platform_get_drvdata(pdev);
 
 	nvme_change_ctrl_state(&anv->ctrl, NVME_CTRL_DELETING);
+	flush_delayed_work(&anv->flush_dwork);
+	disable_delayed_work_sync(&anv->flush_dwork);
 	flush_work(&anv->ctrl.reset_work);
 	nvme_stop_ctrl(&anv->ctrl);
 	nvme_remove_namespaces(&anv->ctrl);
@@ -1753,6 +1757,7 @@ static int apple_nvme_suspend(struct device *dev)
 	struct apple_nvme *anv = dev_get_drvdata(dev);
 	int ret = 0;
 
+	flush_delayed_work(&anv->flush_dwork);
 	apple_nvme_disable(anv, true);
 
 	if (apple_rtkit_is_running(anv->rtk)) {
