@@ -936,7 +936,9 @@ static void brcmf_del_if(struct brcmf_pub *drvr, s32 bsscfgidx,
 		if (bsscfgidx == 0) {
 			if (ifp->ndev->netdev_ops == &brcmf_netdev_ops_pri) {
 				rtnl_lock();
+				wiphy_lock(drvr->wiphy);
 				brcmf_netdev_stop(ifp->ndev);
+				wiphy_unlock(drvr->wiphy);
 				rtnl_unlock();
 			}
 		} else {
