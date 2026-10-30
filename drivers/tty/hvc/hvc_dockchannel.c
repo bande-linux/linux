@@ -4,6 +4,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/minmax.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
@@ -62,15 +63,14 @@ static ssize_t dc_put_chars(u32 vtermno, const u8 *buf, size_t count)
 
 static ssize_t dc_get_chars(u32 vtermno, u8 *buf, size_t count)
 {
+	size_t avail = readl_relaxed(dc_base + DATA_RX_COUNT);
 	size_t i;
 
-	for (i = 0; i < count; i++) {
-		if (!readl_relaxed(dc_base + DATA_RX_COUNT))
-			break;
+	count = min(count, avail);
+	for (i = 0; i < count; i++)
 		buf[i] = readl_relaxed(dc_base + DATA_RX8) >> 8;
-	}
 
-	return i;
+	return count;
 }
 
 static const struct hv_ops dc_ops = {
@@ -111,16 +111,16 @@ static struct platform_driver dc_driver = {
 };
 builtin_platform_driver(dc_driver);
 
+static void dc_early_putchar(struct uart_port *port, unsigned char ch)
+{
+	dc_tx(port->membase, &ch, 1);
+}
+
 static void dc_early_write(struct console *con, const char *s, unsigned int n)
 {
 	struct earlycon_device *dev = con->data;
-	const u8 cr = '\r';
 
-	for (; n; n--, s++) {
-		if (*s == '\n')
-			dc_tx(dev->port.membase, &cr, 1);
-		dc_tx(dev->port.membase, (const u8 *)s, 1);
-	}
+	uart_console_write(&dev->port, s, n, dc_early_putchar);
 }
 
 static int __init dc_early_setup(struct earlycon_device *device, const char *opt)
