@@ -458,23 +458,28 @@ out:
 	return ret;
 }
 
+/*
+ * A wildcard pattern can match controls of any type; only volsw controls
+ * carry a struct soc_mixer_control in private_value.
+ */
+static bool soc_is_volsw(struct snd_kcontrol *kctl)
+{
+	return kctl->info == snd_soc_info_volsw ||
+	       kctl->info == snd_soc_info_volsw_sx;
+}
+
 static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 {
 	struct soc_mixer_control *mc;
 
-	/*
-	 * A wildcard pattern can match controls of any type; only volsw
-	 * controls carry a struct soc_mixer_control in private_value.
-	 */
-	if (kctl->info != snd_soc_info_volsw &&
-	    kctl->info != snd_soc_info_volsw_sx)
+	if (!soc_is_volsw(kctl))
 		return -EINVAL;
 
 	mc = (struct soc_mixer_control *)kctl->private_value;
 	if (max <= 0 || max > mc->max - mc->min)
 		return -EINVAL;
 	mc->platform_max = max;
-	return snd_soc_clip_to_platform_max(kctl);
+	return 0;
 }
 
 /**
@@ -495,6 +500,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 {
 	struct snd_kcontrol *kctl;
 	int hits = 0;
+	int err = 0;
 	int ret;
 
 	/* Sanity check for name */
@@ -506,10 +512,23 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 			continue;
 
 		ret = soc_limit_volume(kctl, max);
-		if (ret < 0)
-			return ret;
+		if (ret < 0 && !err)
+			err = ret;
 		hits++;
 	}
+
+	list_for_each_entry(kctl, &card->snd_card->controls, list) {
+		/* A non-volsw match already failed above; never clip it. */
+		if (!snd_soc_control_matches(kctl, name) || !soc_is_volsw(kctl))
+			continue;
+
+		ret = snd_soc_clip_to_platform_max(kctl);
+		if (ret < 0 && !err)
+			err = ret;
+	}
+
+	if (err)
+		return err;
 
 	if (!hits) {
 		/* Some cards blindly add limits for multiple variants. */

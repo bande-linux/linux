@@ -131,14 +131,17 @@ struct macaudio_snd_data {
 
 	struct mutex volume_lock_mutex;
 	bool speaker_volume_unlocked;
+	bool speaker_volume_lock_failed;
 	bool speaker_volume_was_locked;
+	unsigned int speaker_volume_count;
 	struct snd_kcontrol *speaker_lock_kctl;
 	struct snd_ctl_file *speaker_lock_owner;
-	u64 bes_active;
+	unsigned long bes_active;
 	bool speaker_lock_timeout_enabled;
 	ktime_t speaker_lock_timeout;
 	ktime_t speaker_lock_remain;
 	struct delayed_work lock_timeout_work;
+	struct delayed_work lock_retry_work;
 	struct work_struct lock_update_work;
 
 };
@@ -228,31 +231,37 @@ static struct macaudio_link_props macaudio_fe_link_props[] = {
 	}
 };
 
-static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
+static unsigned int macaudio_vlimit_count(struct macaudio_snd_data *ma)
+{
+	struct snd_kcontrol *kctl;
+	unsigned int count = 0;
+
+	list_for_each_entry(kctl, &ma->card.snd_card->controls, list)
+		if (snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
+			count++;
+
+	return count;
+}
+
+static int macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 {
 	int ret, max;
 	const char *name = volume_control_names[ma->cfg->amp];
 
 	if (!name) {
 		WARN_ON_ONCE(1);
-		return;
+		return -EINVAL;
 	}
 
 	switch (ma->cfg->amp) {
 	case AMP_NONE:
 		WARN_ON_ONCE(1);
-		return;
+		return -EINVAL;
 	case AMP_TAS5770:
-		if (unlock)
-			max = TAS5770_0DB;
-		else
-			max = 1; //TAS5770_DB(ma->cfg->safe_vol);
+		max = unlock ? TAS5770_0DB : 1;
 		break;
 	case AMP_SN012776:
-		if (unlock)
-			max = SN012776_0DB;
-		else
-			max = 1; //SN012776_DB(ma->cfg->safe_vol);
+		max = unlock ? SN012776_0DB : 1;
 		break;
 	case AMP_SSM3515:
 		if (unlock)
@@ -264,13 +273,33 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 
 	ret = snd_soc_limit_volume(&ma->card, name, max);
 	if (ret < 0)
-		dev_err(ma->card.dev, "Failed to %slock volume %s: %d\n",
-			unlock ? "un" : "", name, ret);
+		return ret;
+
+	return macaudio_vlimit_count(ma) == ma->speaker_volume_count ? 0 : -ENODEV;
+}
+
+static void macaudio_stop_speakers(struct macaudio_snd_data *ma)
+{
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_dpcm *dpcm;
+
+	snd_soc_dpcm_mutex_lock(&ma->card);
+	for_each_card_rtds(&ma->card, rtd) {
+		if (!rtd->dai_link->no_pcm ||
+		    !ma->link_props[rtd->dai_link->id].is_speakers)
+			continue;
+
+		for_each_dpcm_fe(rtd, SNDRV_PCM_STREAM_PLAYBACK, dpcm)
+			snd_pcm_stop_xrun(snd_soc_dpcm_get_substream(dpcm->fe,
+						SNDRV_PCM_STREAM_PLAYBACK));
+	}
+	snd_soc_dpcm_mutex_unlock(&ma->card);
 }
 
 static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 {
-	int i;
+	int i, ret;
+	unsigned int matches = 0;
 	bool unlock = true;
 	struct snd_kcontrol *kctl;
 	const char *reason;
@@ -296,6 +325,7 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		if(!snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
 			continue;
 
+		matches++;
 		for (i = 0; i < kctl->count; i++) {
 			if (kctl->vd[i].owner != ma->speaker_lock_owner) {
 				reason = "Not all child controls locked by the same process";
@@ -304,20 +334,57 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		}
 	}
 
+	if (matches != ma->speaker_volume_count) {
+		reason = "Speaker volume controls missing";
+		unlock = false;
+	}
 
+	if (unlock == ma->speaker_volume_unlocked &&
+	    !ma->speaker_volume_lock_failed)
+		return;
+
+	ret = macaudio_vlimit_unlock(ma, unlock);
+	if (ret < 0 && unlock) {
+		dev_err(ma->card.dev, "Failed to unlock speaker volumes: %d\n", ret);
+		unlock = false;
+		reason = "Unlock failed";
+		ret = macaudio_vlimit_unlock(ma, false);
+	}
+
+	if (ret < 0) {
+		dev_err_ratelimited(ma->card.dev,
+				    "Failed to lock speaker volumes: %d\n", ret);
+		ma->speaker_volume_lock_failed = true;
+		ma->speaker_volume_was_locked = true;
+		macaudio_stop_speakers(ma);
+		schedule_delayed_work(&ma->lock_retry_work,
+				      msecs_to_jiffies(SPEAKER_LOCK_TIMEOUT));
+		return;
+	}
+
+	if (unlock) {
+		dev_info(ma->card.dev, "Speaker volumes unlocked\n");
+	} else if (ma->speaker_volume_unlocked || ma->speaker_volume_lock_failed) {
+		dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
+		ma->speaker_volume_was_locked = true;
+	}
+
+	ma->speaker_volume_lock_failed = false;
 	if (unlock != ma->speaker_volume_unlocked) {
-		if (unlock) {
-			dev_info(ma->card.dev, "Speaker volumes unlocked\n");
-		} else  {
-			dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
-			ma->speaker_volume_was_locked = true;
-		}
-
-		macaudio_vlimit_unlock(ma, unlock);
 		ma->speaker_volume_unlocked = unlock;
 		snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
 			       &ma->speaker_lock_kctl->id);
 	}
+}
+
+static void macaudio_vlimit_retry_work(struct work_struct *wrk)
+{
+	struct macaudio_snd_data *ma = container_of(to_delayed_work(wrk),
+						    struct macaudio_snd_data, lock_retry_work);
+
+	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
+	guard(mutex)(&ma->volume_lock_mutex);
+	macaudio_vlimit_update(ma);
 }
 
 static void macaudio_vlimit_enable_timeout(struct macaudio_snd_data *ma)
@@ -378,14 +445,23 @@ static void macaudio_vlimit_timeout_work(struct work_struct *wrk)
 {
         struct macaudio_snd_data *ma = container_of(to_delayed_work(wrk),
 						    struct macaudio_snd_data, lock_timeout_work);
+	ktime_t left;
 
 	guard(rwsem_read)(&ma->card.snd_card->controls_rwsem);
-	mutex_lock(&ma->volume_lock_mutex);
+	guard(mutex)(&ma->volume_lock_mutex);
+
+	if (!ma->speaker_lock_timeout_enabled)
+		return;
+
+	left = ktime_sub(ma->speaker_lock_timeout, ktime_get());
+	if (ktime_to_us(left) > 0) {
+		schedule_delayed_work(&ma->lock_timeout_work,
+				      usecs_to_jiffies(ktime_to_us(left)));
+		return;
+	}
 
 	ma->speaker_lock_remain = 0;
 	macaudio_vlimit_update(ma);
-
-	mutex_unlock(&ma->volume_lock_mutex);
 }
 
 static void macaudio_vlimit_update_work(struct work_struct *wrk)
@@ -393,7 +469,7 @@ static void macaudio_vlimit_update_work(struct work_struct *wrk)
         struct macaudio_snd_data *ma = container_of(wrk,
 						    struct macaudio_snd_data, lock_update_work);
 
-	if (ma->bes_active)
+	if (READ_ONCE(ma->bes_active))
 		macaudio_vlimit_enable_timeout(ma);
 	else
 		macaudio_vlimit_disable_timeout(ma);
@@ -944,12 +1020,12 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 		case SNDRV_PCM_TRIGGER_START:
 		case SNDRV_PCM_TRIGGER_RESUME:
 		case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-			ma->bes_active |= BIT(rtd->dai_link->id);
+			set_bit(rtd->dai_link->id, &ma->bes_active);
 			break;
 		case SNDRV_PCM_TRIGGER_SUSPEND:
 		case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		case SNDRV_PCM_TRIGGER_STOP:
-			ma->bes_active &= ~BIT(rtd->dai_link->id);
+			clear_bit(rtd->dai_link->id, &ma->bes_active);
 			break;
 		default:
 			return -EINVAL;
@@ -1055,6 +1131,12 @@ static void macaudio_be_exit(struct snd_soc_pcm_runtime *rtd)
 	if (props->is_headphones) {
 		for_each_rtd_codec_dais(rtd, i, dai)
 			snd_soc_component_set_jack(dai->component, NULL, NULL);
+	}
+
+	if (props->is_speakers) {
+		cancel_work_sync(&ma->lock_update_work);
+		cancel_delayed_work_sync(&ma->lock_timeout_work);
+		cancel_delayed_work_sync(&ma->lock_retry_work);
 	}
 }
 
@@ -1214,10 +1296,22 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 	if (ma->has_safety) {
 		ma->speaker_lock_kctl = snd_soc_card_get_kcontrol(card,
 								  "Speaker Volume Unlock");
+		if (!ma->speaker_lock_kctl)
+			return dev_err_probe(card->dev, -ENODEV,
+					     "No speaker volume unlock control\n");
+
+		for_each_card_rtds(card, rtd)
+			if (rtd->dai_link->no_pcm &&
+			    ma->link_props[rtd->dai_link->id].is_speakers)
+				ma->speaker_volume_count += rtd->dai_link->num_codecs;
 
 		guard(rwsem_read)(&card->snd_card->controls_rwsem);
 		guard(mutex)(&ma->volume_lock_mutex);
-		macaudio_vlimit_unlock(ma, false);
+		ret = macaudio_vlimit_unlock(ma, false);
+		if (ret < 0)
+			return dev_err_probe(card->dev, ret,
+					     "Failed to lock %u speaker volumes\n",
+					     ma->speaker_volume_count);
 	}
 
 	return 0;
@@ -1247,6 +1341,28 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 		CHECK(call, buf, value); \
 	}
 
+static int macaudio_lock_kctl(struct snd_soc_card *card, const char *name, int active)
+{
+	struct snd_kcontrol *kctl;
+	int hits, i;
+
+	hits = snd_soc_deactivate_kctl(card, name, active);
+	if (hits < 0 || active)
+		return hits;
+
+	guard(rwsem_write)(&card->snd_card->controls_rwsem);
+	list_for_each_entry(kctl, &card->snd_card->controls, list) {
+		if (!snd_soc_control_matches(kctl, name))
+			continue;
+
+		for (i = 0; i < kctl->count; i++)
+			kctl->vd[i].access &= ~SNDRV_CTL_ELEM_ACCESS_WRITE;
+		snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_INFO, &kctl->id);
+	}
+
+	return hits;
+}
+
 static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, bool tweeter)
 {
 	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
@@ -1259,7 +1375,7 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 	case AMP_TAS5770:
 		if (ma->cfg->stereo) {
 			CHECK_CONCAT(snd_soc_set_enum_kctl, "ASI1 Sel", "Left");
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "ASI1 Sel", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "ASI1 Sel", 0);
 		}
 
 		CHECK_CONCAT(snd_soc_limit_volume, "Amp Gain Volume", ma->cfg->amp_gain);
@@ -1267,7 +1383,7 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 	case AMP_SN012776:
 		if (ma->cfg->stereo) {
 			CHECK_CONCAT(snd_soc_set_enum_kctl, "ASI1 Sel", "Left");
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "ASI1 Sel", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "ASI1 Sel", 0);
 		}
 
 		CHECK_CONCAT(snd_soc_limit_volume, "Amp Gain Volume", ma->cfg->amp_gain);
@@ -1275,17 +1391,17 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 			     tweeter ? "800 Hz" : "2 Hz");
 
 		if (please_blow_up_my_speakers < 2)
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "HPF Corner Frequency", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "HPF Corner Frequency", 0);
 
 		CHECK_CONCAT(snd_soc_set_enum_kctl, "OCE Handling", "Retry");
-		CHECK_CONCAT(snd_soc_deactivate_kctl, "OCE Handling", 0);
+		CHECK_CONCAT(macaudio_lock_kctl, "OCE Handling", 0);
 		break;
 	case AMP_SSM3515:
 		/* TODO: check */
 		CHECK_CONCAT(snd_soc_set_enum_kctl, "DAC Analog Gain Select", "8.4 V Span");
 
 		if (please_blow_up_my_speakers < 2)
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "DAC Analog Gain Select", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "DAC Analog Gain Select", 0);
 
 		/* TODO: HPF, needs new call to set */
 		break;
@@ -1495,6 +1611,8 @@ static void macaudio_slk_unlock(struct snd_kcontrol *kcontrol)
 	guard(mutex)(&ma->volume_lock_mutex);
 	ma->speaker_lock_owner = NULL;
 	ma->speaker_lock_timeout = 0;
+	ma->speaker_lock_remain = 0;
+	cancel_delayed_work(&ma->lock_timeout_work);
 	macaudio_vlimit_update(ma);
 }
 
@@ -1662,14 +1780,6 @@ static const struct of_device_id macaudio_snd_device_id[]  = {
 };
 MODULE_DEVICE_TABLE(of, macaudio_snd_device_id);
 
-static void macaudio_cancel_vlimit_works(void *data)
-{
-	struct macaudio_snd_data *ma = data;
-
-	cancel_work_sync(&ma->lock_update_work);
-	cancel_delayed_work_sync(&ma->lock_timeout_work);
-}
-
 static int macaudio_snd_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -1738,10 +1848,7 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 
 	INIT_WORK(&data->lock_update_work, macaudio_vlimit_update_work);
 	INIT_DELAYED_WORK(&data->lock_timeout_work, macaudio_vlimit_timeout_work);
-
-	ret = devm_add_action(dev, macaudio_cancel_vlimit_works, data);
-	if (ret)
-		return ret;
+	INIT_DELAYED_WORK(&data->lock_retry_work, macaudio_vlimit_retry_work);
 
 	return devm_snd_soc_register_card(dev, card);
 }
