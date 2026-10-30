@@ -62,9 +62,22 @@ int dwc3_core_probe(const struct dwc3_probe_data *data);
  *
  * Cleans up resources and disables the dwc3 core driver. This should be called
  * during driver removal or when the glue layer needs to shut down the
- * controller completely.
+ * controller completely. Glue drivers that use skip_core_init_mode and bring
+ * the core and the target mode up and down themselves must use
+ * dwc3_core_release() instead.
  */
 void dwc3_core_remove(struct dwc3 *dwc);
+
+/**
+ * dwc3_core_release - Undo dwc3_core_probe() without exiting the core
+ * @dwc: Pointer to DWC3 controller context
+ *
+ * Like dwc3_core_remove(), but neither exits the host or gadget mode nor
+ * calls dwc3_core_exit(). For glue drivers that use skip_core_init_mode and
+ * have already exited the mode and the core themselves (or never initialized
+ * the core again after their last dwc3_core_exit()).
+ */
+void dwc3_core_release(struct dwc3 *dwc);
 
 /*
  * The following callbacks are provided for glue drivers to call from their
