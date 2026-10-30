@@ -478,7 +478,9 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	appledwc->dev = &pdev->dev;
-	mutex_init(&appledwc->lock);
+	ret = devm_mutex_init(dev, &appledwc->lock);
+	if (ret)
+		return ret;
 
 	appledwc->reset = devm_reset_control_get_exclusive(dev, NULL);
 	if (IS_ERR(appledwc->reset))
@@ -553,6 +555,13 @@ static const struct of_device_id dwc3_apple_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, dwc3_apple_of_match);
 
+/*
+ * No dev_pm_ops yet: system sleep is not supported. dwc3's own suspend/resume paths assume
+ * that the core stays initialized and that the PHYs can be re-powered by dwc3, neither of which
+ * holds here (see the comment above enum dwc3_apple_state). Supporting it means tearing the
+ * port down to DWC3_APPLE_NO_CABLE on suspend and letting the port controller re-announce the
+ * cable on resume.
+ */
 static struct platform_driver dwc3_apple_driver = {
 	.probe		= dwc3_apple_probe,
 	.remove		= dwc3_apple_remove,
