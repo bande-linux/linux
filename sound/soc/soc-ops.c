@@ -479,8 +479,8 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
  * verbatim, or a pattern starting with the wildcard '*') and sets
  * a platform volume limit on them.
  *
- * Return number of matching controls on success, else error. At least
- * one control needs to match the pattern.
+ * Return 0 on success, else error. At least one control needs to match
+ * the pattern.
  */
 int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 {
@@ -509,7 +509,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		return -EINVAL;
 	}
 
-	return hits;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
 
@@ -520,8 +520,8 @@ EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
  * @name: name pattern
  * @active: non-zero to activate, zero to deactivate
  *
- * Return number of matching controls on success, else error.
- * No controls need to match.
+ * Return number of matching controls on success, else error. At least
+ * one control needs to match the pattern.
  */
 int snd_soc_deactivate_kctl(struct snd_soc_card *card,
 	const char *name, int active)
@@ -591,7 +591,7 @@ static int soc_set_enum_kctl(struct snd_kcontrol *kctl, const char *strval)
  * @value: string value to set the controls to
  *
  * Return number of matching and set controls on success, else error.
- * No controls need to match.
+ * At least one control needs to match the pattern.
  */
 int snd_soc_set_enum_kctl(struct snd_soc_card *card,
 	const char *name, const char *value)
