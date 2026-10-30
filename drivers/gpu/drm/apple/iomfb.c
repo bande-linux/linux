@@ -536,13 +536,14 @@ void iomfb_recv_msg(struct apple_dcp *dcp, u64 message)
 
 int iomfb_start_rtkit(struct apple_dcp *dcp)
 {
-	dma_addr_t shmem_iova;
 	apple_rtkit_start_ep(dcp->rtk, IOMFB_ENDPOINT);
 
-	dcp->shmem = dma_alloc_coherent(dcp->dev, DCP_SHMEM_SIZE, &shmem_iova,
-					GFP_KERNEL);
+	dcp->shmem = dma_alloc_coherent(dcp->dev, DCP_SHMEM_SIZE,
+					&dcp->shmem_iova, GFP_KERNEL);
+	if (!dcp->shmem)
+		return -ENOMEM;
 
-	dcp_send_message(dcp, IOMFB_ENDPOINT, dcpep_set_shmem(shmem_iova));
+	dcp_send_message(dcp, IOMFB_ENDPOINT, dcpep_set_shmem(dcp->shmem_iova));
 
 	return 0;
 }

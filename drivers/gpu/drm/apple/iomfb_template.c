@@ -581,6 +581,10 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 		}
 		if (dcp->nr_modes == 0)
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
+
+		complete_all(&dcp->timings_done);
+		if (dcp->connector && dcp->connector->connected)
+			schedule_work(&dcp->connector->hotplug_wq);
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
 		ret = parse_display_attributes(&ctx, &dcp->width_mm,
 					&dcp->height_mm);
@@ -803,11 +807,26 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	dcp_set_parameter_dcp(dcp, false, &param, dcp_on_set_power_state, cookie);
 }
 
+static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	u32 handle;
+
+	dcp->client_open = true;
+	if (dcp->main_display) {
+		handle = 0;
+		dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
+				       cookie);
+	} else {
+		handle = 2;
+		dcp_set_display_device(dcp, false, &handle,
+				       dcp_on_set_parameter, cookie);
+	}
+}
+
 void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 {
 	struct dcp_wait_cookie *cookie;
 	int ret;
-	u32 handle;
 	dev_info(dcp->dev, "dcp_poweron() starting\n");
 
 	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
@@ -819,15 +838,10 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 	/* increase refcount to ensure the receiver has a reference */
 	kref_get(&cookie->refcount);
 
-	if (dcp->main_display) {
-		handle = 0;
-		dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
-				       cookie);
-	} else {
-		handle = 2;
-		dcp_set_display_device(dcp, false, &handle,
-				       dcp_on_set_parameter, cookie);
-	}
+	if (dcp->client_open)
+		dcp_on_client_open(dcp, NULL, cookie);
+	else
+		dcp_first_client_open(dcp, false, dcp_on_client_open, cookie);
 	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(10000));
 
 	if (ret == 0) {
@@ -870,6 +884,14 @@ static void last_client_closed_poff(struct apple_dcp *dcp, void *out, void *cook
 			    cookie);
 }
 
+#if DCP_FW_VER < DCP_FW_VERSION(14, 7, 0)
+static void client_closed_poff(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	dcp->client_open = false;
+	last_client_closed_poff(dcp, out, cookie);
+}
+#endif
+
 static void aborted_swaps_dcp_poff(struct apple_dcp *dcp, void *out, void *cookie)
 {
 #if DCP_FW_VER >= DCP_FW_VERSION(14, 7, 0)
@@ -878,7 +900,7 @@ static void aborted_swaps_dcp_poff(struct apple_dcp *dcp, void *out, void *cooki
 #else
 	struct iomfb_last_client_close_req last_client_req = {};
 	iomfb_last_client_close(dcp, false, &last_client_req,
-				last_client_closed_poff, cookie);
+				client_closed_poff, cookie);
 #endif
 }
 
@@ -976,6 +998,7 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 
 static void last_client_closed_sleep(struct apple_dcp *dcp, void *out, void *cookie)
 {
+	dcp->client_open = false;
 	struct dcp_set_power_state_req power_req = {
 		.unklong = 0,
 	};
@@ -1456,6 +1479,7 @@ static void res_is_main_display(struct apple_dcp *dcp, void *out, void *cookie)
 
 static void init_3(struct apple_dcp *dcp, void *out, void *cookie)
 {
+	dcp->client_open = true;
 	dcp_is_main_display(dcp, false, res_is_main_display, NULL);
 }
 
@@ -1487,6 +1511,20 @@ void DCP_FW_NAME(iomfb_shutdown)(struct apple_dcp *dcp)
 	struct dcp_set_power_state_req req = {
 		/* defaults are ok */
 	};
+	struct dcp_wait_cookie *cookie;
+	int ret;
 
-	dcp_set_power_state(dcp, false, &req, NULL, NULL);
+	cookie = kzalloc_obj(*cookie);
+	if (!cookie)
+		return;
+	init_completion(&cookie->done);
+	kref_init(&cookie->refcount);
+	kref_get(&cookie->refcount);
+
+	dcp_set_power_state(dcp, false, &req, complete_set_powerstate, cookie);
+	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(1000));
+	if (ret == 0)
+		dev_warn(dcp->dev, "setPowerState(0) on shutdown timed out\n");
+
+	kref_put(&cookie->refcount, release_wait_cookie);
 }

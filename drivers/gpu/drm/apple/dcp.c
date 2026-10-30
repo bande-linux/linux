@@ -378,6 +378,7 @@ static int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 		goto out_unlock;
 
 	reinit_completion(&dcp->dptxport[port].linkcfg_completion);
+	reinit_completion(&dcp->timings_done);
 	dcp->dptxport[port].atcphy = dcp->phy;
 	dptxport_connect(dcp->dptxport[port].service, 0, dcp->dptx_phy, dcp->dptx_die);
 	dptxport_request_display(dcp->dptxport[port].service);
@@ -430,10 +431,19 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 	return 0;
 }
 
+static void dcp_read_sink_modes(struct apple_dcp *dcp);
+
 int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
-	return dcp_dptx_connect(dcp, port);
+	bool was_connected = dcp->dptxport[port].connected;
+	int ret;
+
+	ret = dcp_dptx_connect(dcp, port);
+	if (!ret && !was_connected)
+		dcp_read_sink_modes(dcp);
+
+	return ret;
 }
 
 int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port)
@@ -470,8 +480,9 @@ static irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
 		dev_info(dcp->dev, "DP2HDMI HPD irq, 500ms debounce: connected:%d\n", connected);
 	}
 
-	if (connected)
-		dcp_dptx_connect(dcp, 0);
+	if (connected && !dcp->dptxport[0].connected &&
+	    !dcp_dptx_connect(dcp, 0))
+		dcp_read_sink_modes(dcp);
 
 	return IRQ_HANDLED;
 }
@@ -652,18 +663,8 @@ static void __maybe_unused dcp_sleep(struct apple_dcp *dcp)
 	}
 }
 
-void dcp_poweron(struct platform_device *pdev)
+static void _dcp_poweron(struct apple_dcp *dcp)
 {
-	struct apple_dcp *dcp = platform_get_drvdata(pdev);
-
-	if (dcp->hdmi_hpd) {
-		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
-		dev_info(dcp->dev, "%s: DP2HDMI HPD connected:%d\n", __func__, connected);
-
-		if (connected)
-			dcp_dptx_connect(dcp, 0);
-	}
-
 	switch (dcp->fw_compat) {
 	case DCP_FIRMWARE_V_12_3:
 		iomfb_poweron_v12_3(dcp);
@@ -678,6 +679,50 @@ void dcp_poweron(struct platform_device *pdev)
 		WARN_ONCE(true, "Unexpected firmware version: %u\n", dcp->fw_compat);
 		break;
 	}
+}
+
+#define DCP_TIMINGS_TIMEOUT msecs_to_jiffies(3000)
+
+/*
+ * A display requested while IOMFB is powered off is published with empty
+ * TimingElements, ColorElements and DisplayAttributes (DCP 13.5 trace, j473).
+ */
+static void dcp_read_sink_modes(struct apple_dcp *dcp)
+{
+	mutex_lock(&dcp->power_mutex);
+	if (dcp->powered)
+		goto out_unlock;
+
+	if (!wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT) ||
+	    dcp->nr_modes)
+		goto out_unlock;
+
+	reinit_completion(&dcp->timings_done);
+	_dcp_poweron(dcp);
+	if (!wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT))
+		dev_err(dcp->dev, "no TimingElements after power on\n");
+	_dcp_poweroff(dcp);
+
+out_unlock:
+	mutex_unlock(&dcp->power_mutex);
+}
+
+void dcp_poweron(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	mutex_lock(&dcp->power_mutex);
+	if (dcp->hdmi_hpd) {
+		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
+		dev_info(dcp->dev, "%s: DP2HDMI HPD connected:%d\n", __func__, connected);
+
+		if (connected)
+			dcp_dptx_connect(dcp, 0);
+	}
+
+	_dcp_poweron(dcp);
+	dcp->powered = true;
+	mutex_unlock(&dcp->power_mutex);
 
 	if (dcp->avep)
 		av_service_connect(dcp);
@@ -690,7 +735,10 @@ void dcp_poweroff(struct platform_device *pdev)
 	if (dcp->avep)
 		av_service_disconnect(dcp);
 
+	mutex_lock(&dcp->power_mutex);
 	_dcp_poweroff(dcp);
+	dcp->powered = false;
+	mutex_unlock(&dcp->power_mutex);
 
 	if (dcp->hdmi_hpd) {
 		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
@@ -1008,6 +1056,8 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		dev_info(dev, "DCP index:%u dptx target phy: %u dptx die: %u\n",
 			 dcp->index, dcp->dptx_phy, dcp->dptx_die);
 	mutex_init(&dcp->hpd_mutex);
+	mutex_init(&dcp->power_mutex);
+	init_completion(&dcp->timings_done);
 
 	if (!show_notch)
 		ret = of_property_read_u32(dev->of_node, "apple,notch-height",
@@ -1104,6 +1154,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
+	int ret;
 
 	if (!dcp)
 		return;
@@ -1141,6 +1192,20 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 
 	if (dcp->shmem)
 		iomfb_shutdown(dcp);
+
+	/* The bootloader hands the DCP over quiesced (m1n1 display_shutdown()) */
+	if (!dcp->crashed && apple_rtkit_is_running(dcp->rtk)) {
+		ret = apple_rtkit_quiesce(dcp->rtk);
+		if (ret)
+			dev_err(dev, "failed to quiesce RTKit: %d\n", ret);
+	}
+	devm_apple_rtkit_free(dev, dcp->rtk);
+	dcp->rtk = NULL;
+
+	if (dcp->shmem) {
+		dma_free_coherent(dev, DCP_SHMEM_SIZE, dcp->shmem, dcp->shmem_iova);
+		dcp->shmem = NULL;
+	}
 
 	if (dcp->piodma) {
 		dcp->iommu_dom = NULL;

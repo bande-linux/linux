@@ -141,6 +141,7 @@ struct apple_dcp {
 
 	/* DCP shared memory */
 	void *shmem;
+	dma_addr_t shmem_iova;
 
 	/* Display registers mappable to the DCP */
 	struct resource *disp_registers[MAX_DISP_REGISTERS];
@@ -259,6 +260,11 @@ struct apple_dcp {
 	struct gpio_desc *dp2hdmi_pwren;
 
 	struct mutex hpd_mutex;
+
+	struct mutex power_mutex;
+	bool powered;
+	bool client_open;
+	struct completion timings_done;
 
 	u32 dptx_phy;
 	u32 dptx_die;
