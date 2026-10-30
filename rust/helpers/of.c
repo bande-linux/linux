@@ -8,22 +8,23 @@ __rust_helper bool rust_helper_is_of_node(const struct fwnode_handle *fwnode)
 	return is_of_node(fwnode);
 }
 
-const struct of_device_id *rust_helper_of_match_device(
-		const struct of_device_id *matches, const struct device *dev)
+__rust_helper const struct of_device_id *
+rust_helper_of_match_device(const struct of_device_id *matches,
+			    const struct device *dev)
 {
-			return of_match_device(matches, dev);
+	return of_match_device(matches, dev);
 }
 
 #ifdef CONFIG_OF
-bool rust_helper_of_node_is_root(const struct device_node *np)
+__rust_helper bool rust_helper_of_node_is_root(const struct device_node *np)
 {
 	return of_node_is_root(np);
 }
 #endif
 
-struct device_node *rust_helper_of_parse_phandle(const struct device_node *np,
-               const char *phandle_name,
-               int index)
+__rust_helper struct device_node *
+rust_helper_of_parse_phandle(const struct device_node *np,
+			     const char *phandle_name, int index)
 {
 	return of_parse_phandle(np, phandle_name, index);
 }
