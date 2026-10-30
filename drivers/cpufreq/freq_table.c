@@ -51,10 +51,11 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy)
 
 	policy->cpuinfo.min_freq = min_freq;
 	/*
-	 * If the driver has set its own cpuinfo.max_freq above max_freq, leave
-	 * it as is.
+	 * Keep a cpuinfo.max_freq set by the driver above the table maximum
+	 * (acpi-cpufreq does that), unless the table has boost frequencies, in
+	 * which case cpuinfo.max_freq follows the boost state.
 	 */
-	if (policy->cpuinfo.max_freq < max_freq)
+	if (policy->cpuinfo.max_freq < max_freq || policy_has_boost_freq(policy))
 		policy->cpuinfo.max_freq = max_freq;
 
 	if (min_freq == ~0)
