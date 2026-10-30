@@ -587,6 +587,8 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
 		complete_all(&dcp->timings_done);
+		WRITE_ONCE(dcp->publish_seq, dcp->publish_seq + 1);
+		wake_up_var(&dcp->publish_seq);
 
 		return parsed;
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
@@ -926,6 +928,8 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 	struct dcp_swap_start_req swap_req = { 0 };
 	struct DCP_FW_NAME(dcp_swap_submit_req) *swap = &DCP_FW_UNION(dcp->swap);
 
+	dcp->valid_mode = false;
+
 	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
 	if (!cookie)
 		return;
@@ -1050,9 +1054,31 @@ void DCP_FW_NAME(iomfb_sleep)(struct apple_dcp *dcp)
 	dev_info(dcp->dev, "dcp_sleep() done\n");
 }
 
-static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
+static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 {
 	struct apple_connector *connector = dcp->connector;
+
+	dev_info(dcp->dev, "cb_hotplug() connected:%d, valid_mode:%d\n",
+		 connected, dcp->valid_mode);
+
+	/* Hotplug invalidates mode. DRM doesn't always handle this. */
+	if (!connected) {
+		dcp->valid_mode = false;
+		/* after unplug swap will not complete until the next
+		 * set_digital_out_mode */
+		schedule_work(&dcp->vblank_wq);
+	}
+
+	if (connector && connector->connected != connected) {
+		connector->connected = connected;
+		dcp->valid_mode = false;
+		schedule_work(&connector->hotplug_wq);
+	}
+}
+
+static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
+{
+	bool deferred;
 
 	/* DCP issues hotplug_gated callbacks after SetPowerState() calls on
 	 * devices with display (macbooks, imacs). This must not result in
@@ -1064,29 +1090,16 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 	if (dcp->main_display)
 		return;
 
-	if (dcp->during_modeset) {
-		dev_info(dcp->dev,
-			 "cb_hotplug() ignored during modeset connected:%llu\n",
-			 *connected);
-		return;
+	spin_lock(&dcp->hotplug_lock);
+	deferred = dcp->during_modeset;
+	if (deferred) {
+		dcp->hotplug_deferred = true;
+		dcp->hotplug_deferred_connected = !!*connected;
 	}
+	spin_unlock(&dcp->hotplug_lock);
 
-	dev_info(dcp->dev, "cb_hotplug() connected:%llu, valid_mode:%d\n",
-		 *connected, dcp->valid_mode);
-
-	/* Hotplug invalidates mode. DRM doesn't always handle this. */
-	if (!(*connected)) {
-		dcp->valid_mode = false;
-		/* after unplug swap will not complete until the next
-		 * set_digital_out_mode */
-		schedule_work(&dcp->vblank_wq);
-	}
-
-	if (connector && connector->connected != !!(*connected)) {
-		connector->connected = !!(*connected);
-		dcp->valid_mode = false;
-		schedule_work(&connector->hotplug_wq);
-	}
+	if (!deferred)
+		dcp_apply_hotplug(dcp, !!*connected);
 }
 
 static void
@@ -1235,14 +1248,72 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 	}
 }
 
+/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
+#define DCP_PUBLISH_TIMEOUT msecs_to_jiffies(3000)
+
+static int dcp_set_mode(struct apple_dcp *dcp, u32 *result)
+{
+	struct dcp_wait_cookie *cookie;
+	bool deferred, connected;
+	int ret;
+
+	cookie = kzalloc_obj(*cookie);
+	if (!cookie)
+		return -ENOMEM;
+
+	init_completion(&cookie->done);
+	kref_init(&cookie->refcount);
+	/* increase refcount to ensure the receiver has a reference */
+	kref_get(&cookie->refcount);
+
+	spin_lock(&dcp->hotplug_lock);
+	dcp->during_modeset = true;
+	dcp->hotplug_deferred = false;
+	spin_unlock(&dcp->hotplug_lock);
+
+	dcp_set_digital_out_mode(dcp, false, &dcp->mode,
+				 complete_set_digital_out_mode, cookie);
+
+	/*
+	 * The DCP firmware has an internal timeout of ~8 seconds for
+	 * modesets. Add an extra 500ms to safe side that the modeset
+	 * call has returned.
+	 */
+	ret = wait_for_completion_timeout(&cookie->done,
+					  msecs_to_jiffies(8500));
+	*result = ret > 0 ? cookie->result : 0;
+
+	kref_put(&cookie->refcount, release_wait_cookie);
+
+	spin_lock(&dcp->hotplug_lock);
+	dcp->during_modeset = false;
+	deferred = dcp->hotplug_deferred;
+	connected = dcp->hotplug_deferred_connected;
+	spin_unlock(&dcp->hotplug_lock);
+	dev_info(dcp->dev, "set_digital_out_mode finished:%d\n", ret);
+
+	if (deferred)
+		dcp_apply_hotplug(dcp, connected);
+
+	if (ret == 0) {
+		dev_info(dcp->dev, "set_digital_out_mode timed out\n");
+		return -EIO;
+	} else if (ret < 0) {
+		dev_info(dcp->dev,
+			 "waiting on set_digital_out_mode failed:%d\n", ret);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
 	struct dcp_display_mode found, *mode = &found;
 	struct dcp_display_mode *match;
-	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
-	u32 result;
+	u32 result, seq;
 	int ret;
 
 	mutex_lock(&dcp->modes_lock);
@@ -1283,47 +1354,37 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	/* Keep track of suspected vrr modes */
 	dcp->use_timestamps = mode->vrr;
 
-	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
-	if (!cookie) {
-		return -ENOMEM;
-	}
-
-	init_completion(&cookie->done);
-	kref_init(&cookie->refcount);
-	/* increase refcount to ensure the receiver has a reference */
-	kref_get(&cookie->refcount);
-
-	dcp->during_modeset = true;
-
-	dcp_set_digital_out_mode(dcp, false, &dcp->mode,
-				 complete_set_digital_out_mode, cookie);
+	dcp->valid_mode = false;
+	seq = READ_ONCE(dcp->publish_seq);
+	ret = dcp_set_mode(dcp, &result);
+	if (ret)
+		return ret;
 
 	/*
-	 * The DCP firmware has an internal timeout of ~8 seconds for
-	 * modesets. Add an extra 500ms to safe side that the modeset
-	 * call has returned.
+	 * After s2idle the DCP rejected the modeset with "Modeset done, but
+	 * pipe not enabled" and published the display again later (j473).
 	 */
-	ret = wait_for_completion_timeout(&cookie->done,
-					  msecs_to_jiffies(8500));
-	result = ret > 0 ? cookie->result : 0;
-
-	kref_put(&cookie->refcount, release_wait_cookie);
-	dcp->during_modeset = false;
-	dev_info(dcp->dev, "set_digital_out_mode finished:%d\n", ret);
-
-	if (ret == 0) {
-		dev_info(dcp->dev, "set_digital_out_mode timed out\n");
-		return -EIO;
-	} else if (ret < 0) {
-		dev_info(dcp->dev,
-			 "waiting on set_digital_out_mode failed:%d\n", ret);
-		return -EIO;
-
-	} else if (ret > 0) {
-		dev_dbg(dcp->dev,
-			"set_digital_out_mode finished with %d to spare\n",
-			jiffies_to_msecs(ret));
+	if (result &&
+	    wait_var_event_timeout(&dcp->publish_seq,
+				   READ_ONCE(dcp->publish_seq) != seq,
+				   DCP_PUBLISH_TIMEOUT)) {
+		mutex_lock(&dcp->modes_lock);
+		match = lookup_mode(dcp, &crtc_state->mode);
+		if (match)
+			dcp->mode = (struct dcp_set_digital_out_mode_req){
+				.color_mode_id = match->color_mode_id,
+				.timing_mode_id = match->timing_mode_id,
+			};
+		mutex_unlock(&dcp->modes_lock);
+		if (!match) {
+			dev_err(dcp->dev, "set_digital_out_mode failed: %#x\n", result);
+			return -EIO;
+		}
+		ret = dcp_set_mode(dcp, &result);
+		if (ret)
+			return ret;
 	}
+
 	if (result) {
 		dev_err(dcp->dev, "set_digital_out_mode failed: %#x\n", result);
 		return -EIO;

@@ -1138,6 +1138,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		dev_info(dev, "DCP index:%u dptx target phy: %u dptx die: %u\n",
 			 dcp->index, dcp->dptx_phy, dcp->dptx_die);
 	mutex_init(&dcp->hpd_mutex);
+	spin_lock_init(&dcp->hotplug_lock);
 	mutex_init(&dcp->modes_lock);
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);

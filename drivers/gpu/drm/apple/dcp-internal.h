@@ -183,7 +183,12 @@ struct apple_dcp {
 	ktime_t swap_start;
 
 	/* Current display mode */
+	spinlock_t hotplug_lock;
 	bool during_modeset;
+	bool hotplug_deferred;
+	bool hotplug_deferred_connected;
+	u32 publish_seq;
+	u32 connect_seq;
 	bool valid_mode;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
