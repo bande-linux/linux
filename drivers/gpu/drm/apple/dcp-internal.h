@@ -269,6 +269,7 @@ struct apple_dcp {
 	bool client_open;
 	struct completion timings_done;
 	struct work_struct sink_modes_wq;
+	struct work_struct hpd_resume_wq;
 	struct delayed_work release_wq;
 
 	u32 dptx_phy;
