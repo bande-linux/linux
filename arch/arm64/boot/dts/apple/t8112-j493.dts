@@ -248,8 +248,8 @@
 
 		dai-link@0 {
 			link-name = "Speakers";
-			dai-tdm-slot-tx-idle-mode-0 = "zero";
-			dai-tdm-slot-tx-idle-mode-2 = "zero";
+			dai-tdm-idle-mode-0 = "zero";
+			dai-tdm-idle-mode-2 = "zero";
 			dai-tdm-slot-tx-idle-mask-0 = <0xf0f0>;
 			dai-tdm-slot-tx-idle-mask-2 = <0x0f0f>;
 
