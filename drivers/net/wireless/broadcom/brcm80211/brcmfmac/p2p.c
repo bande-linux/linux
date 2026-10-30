@@ -975,6 +975,8 @@ brcmf_p2p_discover_listen(struct brcmf_p2p_info *p2p, u16 channel, u32 duration)
 	}
 
 	ch.chnum = channel;
+	ch.band = channel <= CH_MAX_2G_CHANNEL ? BRCMU_CHAN_BAND_2G :
+						 BRCMU_CHAN_BAND_5G;
 	ch.bw = BRCMU_CHAN_BW_20;
 	p2p->cfg->d11inf.encchspec(&ch);
 	err = brcmf_p2p_set_discover_state(vif->ifp, WL_P2P_DISC_ST_LISTEN,
@@ -1110,11 +1112,14 @@ static s32 brcmf_p2p_act_frm_search(struct brcmf_p2p_info *p2p, u16 channel)
 	ch.bw = BRCMU_CHAN_BW_20;
 	if (channel) {
 		ch.chnum = channel;
+		ch.band = channel <= CH_MAX_2G_CHANNEL ? BRCMU_CHAN_BAND_2G :
+							 BRCMU_CHAN_BAND_5G;
 		p2p->cfg->d11inf.encchspec(&ch);
 		/* insert same channel to the chan_list */
 		for (i = 0; i < channel_cnt; i++)
 			default_chan_list[i] = ch.chspec;
 	} else {
+		ch.band = BRCMU_CHAN_BAND_2G;
 		ch.chnum = SOCIAL_CHAN_1;
 		p2p->cfg->d11inf.encchspec(&ch);
 		default_chan_list[0] = ch.chspec;
@@ -2054,6 +2059,7 @@ static void brcmf_p2p_get_current_chanspec(struct brcmf_p2p_info *p2p,
 	}
 	/* Use default channel for P2P */
 	ch.chnum = BRCMF_P2P_TEMP_CHAN;
+	ch.band = BRCMU_CHAN_BAND_2G;
 	ch.bw = BRCMU_CHAN_BW_20;
 	p2p->cfg->d11inf.encchspec(&ch);
 	*chanspec = ch.chspec;
