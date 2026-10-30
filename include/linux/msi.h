@@ -596,6 +596,7 @@ enum {
 enum {
 	MSI_CHIP_FLAG_SET_EOI		= (1 << 0),
 	MSI_CHIP_FLAG_SET_ACK		= (1 << 1),
+	MSI_CHIP_FLAG_SET_WAKE		= (1 << 2),
 };
 
 /**
