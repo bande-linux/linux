@@ -510,9 +510,10 @@ static void dwc3_apple_remove(struct platform_device *pdev)
 	struct dwc3 *dwc = platform_get_drvdata(pdev);
 	struct dwc3_apple *appledwc = to_dwc3_apple(dwc);
 
-	guard(mutex)(&appledwc->lock);
-
+	/* A role switch in progress holds the switch's lock and waits for ours */
 	usb_role_switch_unregister(appledwc->role_sw);
+
+	guard(mutex)(&appledwc->lock);
 
 	/*
 	 * dwc3_apple_exit() leaves the core exited in every state, so only undo dwc3_core_probe(),
