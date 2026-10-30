@@ -1656,6 +1656,14 @@ static const struct of_device_id macaudio_snd_device_id[]  = {
 };
 MODULE_DEVICE_TABLE(of, macaudio_snd_device_id);
 
+static void macaudio_cancel_vlimit_works(void *data)
+{
+	struct macaudio_snd_data *ma = data;
+
+	cancel_work_sync(&ma->lock_update_work);
+	cancel_delayed_work_sync(&ma->lock_timeout_work);
+}
+
 static int macaudio_snd_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -1725,19 +1733,15 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	INIT_WORK(&data->lock_update_work, macaudio_vlimit_update_work);
 	INIT_DELAYED_WORK(&data->lock_timeout_work, macaudio_vlimit_timeout_work);
 
+	ret = devm_add_action(dev, macaudio_cancel_vlimit_works, data);
+	if (ret)
+		return ret;
+
 	return devm_snd_soc_register_card(dev, card);
-}
-
-static void macaudio_snd_platform_remove(struct platform_device *pdev)
-{
-	struct macaudio_snd_data *ma = dev_get_drvdata(&pdev->dev);
-
-	cancel_delayed_work_sync(&ma->lock_timeout_work);
 }
 
 static struct platform_driver macaudio_snd_driver = {
 	.probe = macaudio_snd_platform_probe,
-	.remove = macaudio_snd_platform_remove,
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = macaudio_snd_device_id,
