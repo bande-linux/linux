@@ -170,7 +170,6 @@
 		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
 		ti,imon-slot-no = <0>;
 		ti,vmon-slot-no = <2>;
-		status = "disabled";
 	};
 
 	jack_codec: codec@4b {
@@ -189,6 +188,17 @@
 	sound {
 		compatible = "apple,j473-macaudio", "apple,macaudio";
 		model = "Mac mini J473";
+
+		dai-link@0 {
+			link-name = "Speaker";
+
+			cpu {
+				sound-dai = <&mca 0>;
+			};
+			codec {
+				sound-dai = <&speaker_amp>;
+			};
+		};
 
 		dai-link@1 {
 			link-name = "Headphone Jack";
