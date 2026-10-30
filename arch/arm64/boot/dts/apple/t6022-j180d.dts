@@ -1055,10 +1055,6 @@
 /delete-node/ &pcie0_dart_2;
 /delete-node/ &pcie0_dart_3;
 
-&nco_clkref {
-	clock-frequency = <1068000000>;
-};
-
 /* USB4 on die 1 */
 &usb4_2_acio_die1 {
 	ports {
