@@ -581,6 +581,10 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 		}
 		if (dcp->nr_modes == 0)
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
+
+		complete_all(&dcp->timings_done);
+		if (dcp->connector && dcp->connector->connected)
+			schedule_work(&dcp->connector->hotplug_wq);
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
 		ret = parse_display_attributes(&ctx, &dcp->width_mm,
 					&dcp->height_mm);

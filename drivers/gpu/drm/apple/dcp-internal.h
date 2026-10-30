@@ -261,6 +261,10 @@ struct apple_dcp {
 
 	struct mutex hpd_mutex;
 
+	struct mutex power_mutex;
+	bool powered;
+	struct completion timings_done;
+
 	u32 dptx_phy;
 	u32 dptx_die;
 	int hdmi_hpd_irq;
