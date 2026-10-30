@@ -192,6 +192,11 @@ struct brcmf_pub {
 	u32 feat_flags;
 	u32 chip_quirks;
 
+	/* join preference the firmware started with, restored when needed */
+#define BRCMF_JOIN_PREF_MAX_LEN		32
+	u8 fw_join_pref[BRCMF_JOIN_PREF_MAX_LEN];
+	u8 fw_join_pref_len;
+
 	struct brcmf_rev_info revinfo;
 #ifdef DEBUG
 	struct dentry *dbgfs_dir;

@@ -36,7 +36,7 @@
  * EVENT_MSGS_EXT: Event messages extension
  * JOIN_V1: Version 1 join struct
  * GCMP: GCMP Cipher suite support
- * JOIN_PREF: firmware accepts the default RSSI and 5GHz RSSI delta join preference
+ * JOIN_PREF_RSSI_DELTA: firmware accepts a join preference with an RSSI delta
  */
 #define BRCMF_FEAT_LIST \
 	BRCMF_FEAT_DEF(MBSS) \
@@ -66,7 +66,7 @@
 	BRCMF_FEAT_DEF(SAE_EXT) \
 	BRCMF_FEAT_DEF(EVENT_MSGS_EXT) \
 	BRCMF_FEAT_DEF(GCMP) \
-	BRCMF_FEAT_DEF(JOIN_PREF)
+	BRCMF_FEAT_DEF(JOIN_PREF_RSSI_DELTA)
 
 /*
  * Quirks:

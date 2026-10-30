@@ -5,6 +5,7 @@
 
 #include <linux/ctype.h>
 #include <linux/netdevice.h>
+#include <linux/unaligned.h>
 #include <linux/module.h>
 
 #include <brcm_hw_ids.h>
@@ -267,6 +268,31 @@ static bool brcmf_feat_fwcap_match(const struct brcmf_feat_fwcap *fwcap,
 	return true;
 }
 
+/*
+ * Keep the firmware's own join preference, so that it can be put back after
+ * a connect with a BSS selection behaviour replaced it. The iovar returns
+ * a __le32 length followed by the preference elements.
+ */
+static void brcmf_feat_save_join_pref(struct brcmf_if *ifp)
+{
+	struct brcmf_pub *drvr = ifp->drvr;
+	u8 buf[sizeof(__le32) + BRCMF_JOIN_PREF_MAX_LEN] = { };
+	u32 len;
+	int err;
+
+	err = brcmf_fil_iovar_data_get(ifp, "join_pref", buf, sizeof(buf));
+	if (err)
+		return;
+
+	len = get_unaligned_le32(buf);
+	if (!len || len > BRCMF_JOIN_PREF_MAX_LEN) {
+		brcmf_dbg(INFO, "join_pref length %u not kept\n", len);
+		return;
+	}
+	memcpy(drvr->fw_join_pref, &buf[sizeof(__le32)], len);
+	drvr->fw_join_pref_len = len;
+}
+
 #define MAX_CAPS_BUFFER_SIZE	768
 static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 {
@@ -392,8 +418,9 @@ int brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_iovar_int_get(ifp, BRCMF_FEAT_FWSUP, "sup_wpa");
 
+	brcmf_feat_save_join_pref(ifp);
 	if (!brcmf_c_set_joinpref(ifp))
-		ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF);
+		ifp->drvr->feat_flags |= BIT(BRCMF_FEAT_JOIN_PREF_RSSI_DELTA);
 
 	err = brcmf_fil_iovar_data_get(ifp, "join_ver", &join_ver, sizeof(join_ver));
 	if (!err) {

@@ -97,14 +97,24 @@ int brcmf_c_set_joinpref(struct brcmf_if *ifp)
 					sizeof(join_pref_params));
 }
 
+/*
+ * Set the driver's default join preference. Firmware that refuses it keeps
+ * the preference it started with, which is set again here in case a connect
+ * with a BSS selection behaviour has replaced it.
+ */
 void brcmf_c_set_joinpref_default(struct brcmf_if *ifp)
 {
+	struct brcmf_pub *drvr = ifp->drvr;
 	int err;
 
-	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF))
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF_RSSI_DELTA))
+		err = brcmf_c_set_joinpref(ifp);
+	else if (drvr->fw_join_pref_len)
+		err = brcmf_fil_iovar_data_set(ifp, "join_pref",
+					       drvr->fw_join_pref,
+					       drvr->fw_join_pref_len);
+	else
 		return;
-
-	err = brcmf_c_set_joinpref(ifp);
 	if (err)
 		bphy_err(ifp->drvr, "Set join_pref error (%d)\n", err);
 }

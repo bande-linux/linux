@@ -7906,8 +7906,10 @@ static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MFP))
 		wiphy->n_cipher_suites--;
 	wiphy->bss_select_support = BIT(NL80211_BSS_SELECT_ATTR_RSSI) |
-				    BIT(NL80211_BSS_SELECT_ATTR_BAND_PREF) |
-				    BIT(NL80211_BSS_SELECT_ATTR_RSSI_ADJUST);
+				    BIT(NL80211_BSS_SELECT_ATTR_BAND_PREF);
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_JOIN_PREF_RSSI_DELTA))
+		wiphy->bss_select_support |=
+			BIT(NL80211_BSS_SELECT_ATTR_RSSI_ADJUST);
 
 	wiphy->bss_param_support = WIPHY_BSS_PARAM_AP_ISOLATE;
 
