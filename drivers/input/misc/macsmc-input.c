@@ -48,10 +48,12 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 	case BTN_TOUCHID:
 		pm_wakeup_dev_event(smcin->dev, 0, (smcin->wakeup_mode && state));
 		/*
-		 * Suppress KEY_POWER reports when suspended to avoid powering down
-		 * immediately after waking from s2idle.
-		 * */
-		if (smcin->wakeup_mode)
+		 * Suppress KEY_POWER presses when suspended to avoid powering down
+		 * immediately after waking from s2idle. Releases are still reported
+		 * so a key pressed before suspend cannot be left stuck down; the
+		 * input core drops releases of keys that are not pressed.
+		 */
+		if (smcin->wakeup_mode && state)
 			return;
 
 		input_report_key(smcin->input, KEY_POWER, state);
