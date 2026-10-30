@@ -244,6 +244,14 @@ static int pasemi_i2c_xfer(struct i2c_adapter *adapter,
 	struct pasemi_smbus *smbus = adapter->algo_data;
 	int ret, i;
 
+	/* A read without STOP never completes (no XEN), so it must be last */
+	for (i = 0; i < num - 1; i++) {
+		if (msgs[i].flags & I2C_M_RD) {
+			dev_warn_once(smbus->dev, "a read must be the last message\n");
+			return -EOPNOTSUPP;
+		}
+	}
+
 	ret = pasemi_smb_clear(smbus);
 	if (ret)
 		return ret;
