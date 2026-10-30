@@ -1723,8 +1723,9 @@ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
 						     DMA_TO_DEVICE);
 	if (!msgbuf->tx_pktids)
 		goto fail;
+	/* Dongle firmware can read posted RX buffers back, e.g. BCM4388 (Apple DART read fault) */
 	msgbuf->rx_pktids = brcmf_msgbuf_init_pktids(NR_RX_PKTIDS,
-						     DMA_FROM_DEVICE);
+						     DMA_BIDIRECTIONAL);
 	if (!msgbuf->rx_pktids)
 		goto fail;
 
