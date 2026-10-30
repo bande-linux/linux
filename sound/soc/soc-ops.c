@@ -518,7 +518,6 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 	}
 
 	list_for_each_entry(kctl, &card->snd_card->controls, list) {
-		/* A non-volsw match already failed above; never clip it. */
 		if (!snd_soc_control_matches(kctl, name) || !soc_is_volsw(kctl))
 			continue;
 
