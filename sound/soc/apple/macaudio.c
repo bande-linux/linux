@@ -1335,6 +1335,28 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 		CHECK(call, buf, value, 1); \
 	}
 
+static int macaudio_lock_kctl(struct snd_soc_card *card, const char *name, int active)
+{
+	struct snd_kcontrol *kctl;
+	int hits, i;
+
+	hits = snd_soc_deactivate_kctl(card, name, active);
+	if (hits < 0 || active)
+		return hits;
+
+	guard(rwsem_write)(&card->snd_card->controls_rwsem);
+	list_for_each_entry(kctl, &card->snd_card->controls, list) {
+		if (!snd_soc_control_matches(kctl, name))
+			continue;
+
+		for (i = 0; i < kctl->count; i++)
+			kctl->vd[i].access &= ~SNDRV_CTL_ELEM_ACCESS_WRITE;
+		snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_INFO, &kctl->id);
+	}
+
+	return hits;
+}
+
 static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, bool tweeter)
 {
 	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
@@ -1347,7 +1369,7 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 	case AMP_TAS5770:
 		if (ma->cfg->stereo) {
 			CHECK_CONCAT(snd_soc_set_enum_kctl, "ASI1 Sel", "Left");
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "ASI1 Sel", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "ASI1 Sel", 0);
 		}
 
 		CHECK_CONCAT(snd_soc_limit_volume, "Amp Gain Volume", ma->cfg->amp_gain);
@@ -1355,7 +1377,7 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 	case AMP_SN012776:
 		if (ma->cfg->stereo) {
 			CHECK_CONCAT(snd_soc_set_enum_kctl, "ASI1 Sel", "Left");
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "ASI1 Sel", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "ASI1 Sel", 0);
 		}
 
 		CHECK_CONCAT(snd_soc_limit_volume, "Amp Gain Volume", ma->cfg->amp_gain);
@@ -1363,17 +1385,17 @@ static int macaudio_set_speaker(struct snd_soc_card *card, const char *prefix, b
 			     tweeter ? "800 Hz" : "2 Hz");
 
 		if (please_blow_up_my_speakers < 2)
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "HPF Corner Frequency", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "HPF Corner Frequency", 0);
 
 		CHECK_CONCAT(snd_soc_set_enum_kctl, "OCE Handling", "Retry");
-		CHECK_CONCAT(snd_soc_deactivate_kctl, "OCE Handling", 0);
+		CHECK_CONCAT(macaudio_lock_kctl, "OCE Handling", 0);
 		break;
 	case AMP_SSM3515:
 		/* TODO: check */
 		CHECK_CONCAT(snd_soc_set_enum_kctl, "DAC Analog Gain Select", "8.4 V Span");
 
 		if (please_blow_up_my_speakers < 2)
-			CHECK_CONCAT(snd_soc_deactivate_kctl, "DAC Analog Gain Select", 0);
+			CHECK_CONCAT(macaudio_lock_kctl, "DAC Analog Gain Select", 0);
 
 		/* TODO: HPF, needs new call to set */
 		break;
