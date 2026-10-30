@@ -3,6 +3,7 @@
  * Copyright (c) 2014 Broadcom Corporation
  */
 
+#include <linux/ctype.h>
 #include <linux/netdevice.h>
 #include <linux/module.h>
 
@@ -44,13 +45,21 @@ static const char *brcmf_feat_names[] = {
 };
 #undef BRCMF_FEAT_DEF
 
+/**
+ * struct brcmf_feat_fwcap - firmware capability to feature mapping.
+ *
+ * @feature: feature that the capability enables.
+ * @fwcap_id: capability name in the "cap" iovar.
+ * @count_suffix: the name may be followed by a decimal count, as in "mbss4".
+ */
 struct brcmf_feat_fwcap {
 	enum brcmf_feat_id feature;
 	const char * const fwcap_id;
+	bool count_suffix;
 };
 
 static const struct brcmf_feat_fwcap brcmf_fwcap_map[] = {
-	{ BRCMF_FEAT_MBSS, "mbss" },
+	{ BRCMF_FEAT_MBSS, "mbss", true },
 	{ BRCMF_FEAT_MCHAN, "mchan" },
 	{ BRCMF_FEAT_P2P, "p2p" },
 	{ BRCMF_FEAT_MONITOR, "monitor" },
@@ -240,6 +249,24 @@ static void brcmf_feat_iovar_data_set(struct brcmf_if *ifp,
 	ifp->fwil_fwerr = false;
 }
 
+static bool brcmf_feat_fwcap_match(const struct brcmf_feat_fwcap *fwcap,
+				   const char *cap)
+{
+	size_t len = strlen(fwcap->fwcap_id);
+	const char *p;
+
+	if (strncmp(cap, fwcap->fwcap_id, len))
+		return false;
+	if (!cap[len])
+		return true;
+	if (!fwcap->count_suffix)
+		return false;
+	for (p = &cap[len]; *p; p++)
+		if (!isdigit(*p))
+			return false;
+	return true;
+}
+
 #define MAX_CAPS_BUFFER_SIZE	768
 static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 {
@@ -257,9 +284,11 @@ static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 
 	brcmf_dbg(INFO, "[ %s]\n", caps);
 
-	while ((cap = strsep(&cur, " "))) {
+	while ((cap = strsep(&cur, " \t\n"))) {
+		if (!*cap)
+			continue;
 		for (i = 0; i < ARRAY_SIZE(brcmf_fwcap_map); i++) {
-			if (strcmp(cap, brcmf_fwcap_map[i].fwcap_id))
+			if (!brcmf_feat_fwcap_match(&brcmf_fwcap_map[i], cap))
 				continue;
 			id = brcmf_fwcap_map[i].feature;
 			brcmf_dbg(INFO, "enabling feature: %s\n",
