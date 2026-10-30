@@ -386,8 +386,6 @@ dcpep_cb_allocate_buffer(struct apple_dcp *dcp,
 
 static u8 dcpep_cb_release_mem_desc(struct apple_dcp *dcp, u32 *mem_desc_id)
 {
-	struct dcp_mem_descriptor *memdesc;
-	size_t size;
 	u32 id = *mem_desc_id;
 
 	if (id >= DCP_MAX_MAPPINGS) {
@@ -402,17 +400,7 @@ static u8 dcpep_cb_release_mem_desc(struct apple_dcp *dcp, u32 *mem_desc_id)
 		return 0;
 	}
 
-	memdesc = &dcp->memdesc[id];
-	size = ALIGN(memdesc->size, SZ_16K);
-	if (memdesc->buf) {
-		dma_free_coherent(dcp->dev, size, memdesc->buf, memdesc->dva);
-		memdesc->buf = NULL;
-		memset(&memdesc->map, 0, sizeof(memdesc->map));
-	} else {
-		memdesc->reg = 0;
-	}
-
-	memdesc->size = 0;
+	dcp_release_memdesc(dcp, &dcp->memdesc[id]);
 
 	return 1;
 }
@@ -456,12 +444,18 @@ dcpep_cb_map_physical(struct apple_dcp *dcp, struct dcp_map_physical_req *req)
 		dev_warn(dcp->dev, "DCP overflowed mapping table, ignoring\n");
 		return (struct dcp_map_physical_resp){};
 	}
+
+	dva = dma_map_resource(dcp->dev, req->paddr, size, DMA_BIDIRECTIONAL, 0);
+	if (dma_mapping_error(dcp->dev, dva)) {
+		dev_err(dcp->dev, "failed to map phys address %llx size %x\n",
+			req->paddr, size);
+		return (struct dcp_map_physical_resp){};
+	}
+
 	set_bit(id, dcp->memdesc_map);
 	dcp->memdesc[id].size = size;
 	dcp->memdesc[id].reg = req->paddr;
-
-	dva = dma_map_resource(dcp->dev, req->paddr, size, DMA_BIDIRECTIONAL, 0);
-	WARN_ON(dva == DMA_MAPPING_ERROR);
+	dcp->memdesc[id].dva = dva;
 
 	return (struct dcp_map_physical_resp){
 		.dva_size = size,
@@ -580,22 +574,27 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 	}
 
 	if (!strcmp(req->key, "TimingElements")) {
-		dcp->modes = enumerate_modes(&ctx, &dcp->nr_modes,
-					     dcp->width_mm, dcp->height_mm,
-					     dcp->notch_height);
+		struct dcp_display_mode *modes;
+		unsigned int nr_modes = 0;
+		bool parsed = true;
 
-		if (IS_ERR(dcp->modes)) {
+		modes = enumerate_modes(&ctx, &nr_modes, dcp->width_mm,
+					dcp->height_mm, dcp->notch_height);
+		if (IS_ERR(modes)) {
 			dev_warn(dcp->dev, "failed to parse modes\n");
-			dcp->modes = NULL;
-			dcp->nr_modes = 0;
-			return false;
-		}
-		if (dcp->nr_modes == 0)
+			modes = NULL;
+			nr_modes = 0;
+			parsed = false;
+		} else if (nr_modes == 0) {
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
+		}
 
-		complete_all(&dcp->timings_done);
-		if (dcp->connector && dcp->connector->connected)
+		if (dcp_replace_modes(dcp, modes, nr_modes) && !dcp->main_display &&
+		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
+		complete_all(&dcp->timings_done);
+
+		return parsed;
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
 		ret = parse_display_attributes(&ctx, &dcp->width_mm,
 					&dcp->height_mm);
@@ -818,11 +817,10 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	dcp_set_parameter_dcp(dcp, false, &param, dcp_on_set_power_state, cookie);
 }
 
-static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
+static void dcp_set_display(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	u32 handle;
 
-	dcp->client_open = true;
 	if (dcp->main_display) {
 		handle = 0;
 		dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
@@ -834,7 +832,13 @@ static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
 	}
 }
 
-void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
+static void dcp_on_client_open(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	dcp->client_open = true;
+	dcp_set_display(dcp, out, cookie);
+}
+
+void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp, bool open_client)
 {
 	struct dcp_wait_cookie *cookie;
 	int ret;
@@ -849,10 +853,10 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 	/* increase refcount to ensure the receiver has a reference */
 	kref_get(&cookie->refcount);
 
-	if (dcp->client_open)
-		dcp_on_client_open(dcp, NULL, cookie);
-	else
+	if (open_client && !dcp->client_open)
 		dcp_first_client_open(dcp, false, dcp_on_client_open, cookie);
+	else
+		dcp_set_display(dcp, NULL, cookie);
 	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(10000));
 
 	if (ret == 0) {
@@ -1009,7 +1013,6 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 
 static void last_client_closed_sleep(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp->client_open = false;
 	struct dcp_set_power_state_req power_req = {
 		.unklong = 0,
 	};
@@ -1240,13 +1243,18 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
-	struct dcp_display_mode *mode;
+	struct dcp_display_mode found, *mode = &found;
+	struct dcp_display_mode *match;
 	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
 	int ret;
 
-	mode = lookup_mode(dcp, &crtc_state->mode);
-	if (!mode) {
+	mutex_lock(&dcp->modes_lock);
+	match = lookup_mode(dcp, &crtc_state->mode);
+	if (match)
+		found = *match;
+	mutex_unlock(&dcp->modes_lock);
+	if (!match) {
 		dev_err(dcp->dev, "no match for " DRM_MODE_FMT "\n",
 			DRM_MODE_ARG(&crtc_state->mode));
 		return -EIO;

@@ -204,6 +204,7 @@ struct apple_dcp {
 	bool crc_enabled;
 
 	/* Modes valid for the connected display */
+	struct mutex modes_lock;
 	struct dcp_display_mode *modes;
 	unsigned int nr_modes;
 
@@ -263,8 +264,12 @@ struct apple_dcp {
 
 	struct mutex power_mutex;
 	bool powered;
+	bool stopping;
+	bool iomfb_on;
 	bool client_open;
 	struct completion timings_done;
+	struct work_struct sink_modes_wq;
+	struct delayed_work release_wq;
 
 	u32 dptx_phy;
 	u32 dptx_die;
