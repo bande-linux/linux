@@ -749,12 +749,27 @@ static void dcp_work_release_display(struct work_struct *work)
 	dcp_dptx_disconnect(dcp, 0);
 }
 
+static void dcp_work_hpd_resume(struct work_struct *work)
+{
+	struct apple_dcp *dcp = container_of(work, struct apple_dcp, hpd_resume_wq);
+
+	if (!gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
+		if (dcp->dptxport[0].connected && !READ_ONCE(dcp->powered))
+			schedule_delayed_work(&dcp->release_wq, DCP_RELEASE_DELAY);
+		return;
+	}
+
+	if (!dcp->dptxport[0].connected && !dcp_dptx_connect(dcp, 0))
+		schedule_work(&dcp->sink_modes_wq);
+}
+
 static void dcp_stop_hpd_work(struct apple_dcp *dcp)
 {
 	mutex_lock(&dcp->power_mutex);
 	dcp->stopping = true;
 	mutex_unlock(&dcp->power_mutex);
 	complete_all(&dcp->timings_done);
+	cancel_work_sync(&dcp->hpd_resume_wq);
 	cancel_work_sync(&dcp->sink_modes_wq);
 	cancel_delayed_work_sync(&dcp->release_wq);
 }
@@ -775,8 +790,10 @@ void dcp_poweron(struct platform_device *pdev)
 		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
 		dev_info(dcp->dev, "%s: DP2HDMI HPD connected:%d\n", __func__, connected);
 
-		if (connected)
-			dcp_dptx_connect(dcp, 0);
+		if (connected && !dcp->dptxport[0].connected &&
+		    !dcp_dptx_connect(dcp, 0) &&
+		    !wait_for_completion_timeout(&dcp->timings_done, DCP_TIMINGS_TIMEOUT))
+			dev_err(dcp->dev, "display not published before modeset\n");
 	}
 
 	_dcp_poweron(dcp, false);
@@ -1125,6 +1142,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);
 	INIT_WORK(&dcp->sink_modes_wq, dcp_work_sink_modes);
+	INIT_WORK(&dcp->hpd_resume_wq, dcp_work_hpd_resume);
 	INIT_DELAYED_WORK(&dcp->release_wq, dcp_work_release_display);
 	dcp->powered = false;
 	dcp->stopping = false;
@@ -1277,7 +1295,7 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		iomfb_shutdown(dcp);
 
 	if (dcp->rtk) {
-		/* The bootloader hands the DCP over quiesced (m1n1 display_shutdown()) */
+		/* apple_rtkit_wake() boots a quiesced DCP (m1n1 display_shutdown(), internal panels) */
 		ret = dcp->crashed ? -EIO : 0;
 		if (!ret && apple_rtkit_is_running(dcp->rtk))
 			ret = apple_rtkit_quiesce(dcp->rtk);
@@ -1482,8 +1500,6 @@ static int dcp_platform_suspend(struct device *dev)
 	if (dcp->hdmi_hpd_irq) {
 		disable_irq(dcp->hdmi_hpd_irq);
 		dcp_stop_hpd_work(dcp);
-		disconnected_hpd_event(dcp->connector);
-		dcp_dptx_disconnect(dcp, 0);
 	}
 	/*
 	 * Set the device as a wakeup device, which forces its power
@@ -1504,6 +1520,7 @@ static int dcp_platform_resume(struct device *dev)
 		dcp->stopping = false;
 		mutex_unlock(&dcp->power_mutex);
 		enable_irq(dcp->hdmi_hpd_irq);
+		schedule_work(&dcp->hpd_resume_wq);
 	}
 
 	if (dcp->avep)
