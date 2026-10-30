@@ -2417,6 +2417,7 @@ int fw_devlink_count_absent_consumers(struct fwnode_handle *fwnode)
 		if (dlink->consumer->links.status != DL_DEV_DRIVER_BOUND)
 			count++;
 
+	put_device(sup_dev);
 	return count;
 }
 EXPORT_SYMBOL_GPL(fw_devlink_count_absent_consumers);
