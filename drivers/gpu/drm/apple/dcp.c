@@ -836,18 +836,24 @@ void dcp_hpd_suspend(struct platform_device *pdev)
 void dcp_hpd_resume(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	bool pending;
 
 	mutex_lock(&dcp->power_mutex);
 	WRITE_ONCE(dcp->stopping, false);
 	mutex_unlock(&dcp->power_mutex);
+	/*
+	 * A report ignored while suspended sets hotplug_pending under the
+	 * same lock, so it is either seen here or not ignored at all.
+	 */
 	spin_lock(&dcp->hotplug_lock);
 	dcp->suspended = false;
+	pending = dcp->hotplug_pending;
 	spin_unlock(&dcp->hotplug_lock);
 	if (dcp->hdmi_hpd_irq)
 		enable_irq(dcp->hdmi_hpd_irq);
 	if (dcp->hdmi_hpd)
 		schedule_work(&dcp->hpd_resume_wq);
-	if (dcp->connector && READ_ONCE(dcp->hotplug_pending))
+	if (dcp->connector && pending)
 		schedule_work(&dcp->connector->hotplug_wq);
 }
 

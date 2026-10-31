@@ -1101,19 +1101,20 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 	spin_lock(&dcp->hotplug_lock);
 	ignored = dcp->suspended;
 	deferred = !ignored && dcp->during_modeset;
-	if (ignored && !*connected)
+	if (ignored && !*connected) {
 		dcp->hotplug_seq++;
+		dcp->valid_mode = false;
+		/* seen by dcp_hpd_resume() once it clears suspended */
+		WRITE_ONCE(dcp->hotplug_pending, true);
+	}
 	if (deferred) {
 		dcp->hotplug_deferred = true;
 		dcp->hotplug_deferred_connected = !!*connected;
 	}
 	spin_unlock(&dcp->hotplug_lock);
 
-	if (ignored && !*connected) {
-		dcp->valid_mode = false;
-		WRITE_ONCE(dcp->hotplug_pending, true);
+	if (ignored && !*connected)
 		schedule_work(&dcp->vblank_wq);
-	}
 
 	if (!deferred && !ignored)
 		dcp_apply_hotplug(dcp, !!*connected);
