@@ -844,8 +844,10 @@ static int macaudio_parse_of(struct macaudio_snd_data *ma)
 
 			link_props->codecs = devm_kcalloc(dev, ncodecs_per_cpu,
 							  sizeof(struct ma_codec_idle), GFP_KERNEL);
-			if (!link_props->codecs)
-				return -ENOMEM;
+			if (!link_props->codecs) {
+				ret = -ENOMEM;
+				goto err_free;
+			}
 			for (i = 0; i < ncodecs_per_cpu; i++) {
 				ret = macaudio_get_codec_idle_props(np, &link_props->codecs[i],
 								    i, be_index, ncodecs_per_cpu);
