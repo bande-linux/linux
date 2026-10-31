@@ -1102,6 +1102,12 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 	}
 	spin_unlock(&dcp->hotplug_lock);
 
+	if (ignored && !*connected) {
+		dcp->valid_mode = false;
+		WRITE_ONCE(dcp->hotplug_pending, true);
+		schedule_work(&dcp->vblank_wq);
+	}
+
 	if (!deferred && !ignored)
 		dcp_apply_hotplug(dcp, !!*connected);
 }
