@@ -25,6 +25,7 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <sound/core.h>
 #include <sound/jack.h>
 #include <sound/pcm.h>
@@ -131,7 +132,9 @@ struct macaudio_snd_data {
 
 	struct mutex volume_lock_mutex;
 	bool speaker_volume_unlocked;
+	bool speaker_volume_lock_failed;
 	bool speaker_volume_was_locked;
+	unsigned int speaker_volume_count;
 	struct snd_kcontrol *speaker_lock_kctl;
 	struct snd_ctl_file *speaker_lock_owner;
 	u64 bes_active;
@@ -228,7 +231,76 @@ static struct macaudio_link_props macaudio_fe_link_props[] = {
 	}
 };
 
-static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
+/*
+ * A speaker volume control is a volsw control whose name matches the amp
+ * pattern, as in snd_soc_limit_volume(). Other controls, such as user
+ * controls added through SNDRV_CTL_IOCTL_ELEM_ADD, never count.
+ */
+static bool macaudio_is_speaker_volume(struct macaudio_snd_data *ma,
+				       struct snd_kcontrol *kctl)
+{
+	return snd_soc_kctl_is_volsw(kctl) &&
+	       snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]);
+}
+
+static unsigned int macaudio_vlimit_count(struct macaudio_snd_data *ma)
+{
+	struct snd_kcontrol *kctl;
+	unsigned int count = 0;
+
+	list_for_each_entry(kctl, &ma->card.snd_card->controls, list)
+		if (macaudio_is_speaker_volume(ma, kctl))
+			count++;
+
+	return count;
+}
+
+/*
+ * Write the cached value of every speaker volume register out to the
+ * amplifier. regmap updates its cache before it writes the device, so
+ * after a failed write the cache can hold a value the amplifier never got,
+ * and capping through the controls would then find nothing to write. In
+ * cache-only mode (suspend) this only marks the cache dirty, and the value
+ * goes out at resume.
+ */
+static int macaudio_vlimit_sync(struct macaudio_snd_data *ma)
+{
+	struct snd_soc_component *component;
+	struct soc_mixer_control *mc;
+	struct snd_kcontrol *kctl;
+	unsigned int val;
+	int ret;
+
+	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
+		if (!macaudio_is_speaker_volume(ma, kctl))
+			continue;
+
+		/* Only component controls have a component as private data */
+		if (kctl->get != snd_soc_get_volsw &&
+		    kctl->get != snd_soc_get_volsw_sx)
+			return -EINVAL;
+
+		component = snd_kcontrol_chip(kctl);
+		mc = (struct soc_mixer_control *)kctl->private_value;
+		if (!component->regmap)
+			return -EINVAL;
+
+		ret = regmap_read(component->regmap, mc->reg, &val);
+		if (!ret)
+			ret = regmap_write(component->regmap, mc->reg, val);
+		if (!ret && snd_soc_volsw_is_stereo(mc)) {
+			ret = regmap_read(component->regmap, mc->rreg, &val);
+			if (!ret)
+				ret = regmap_write(component->regmap, mc->rreg, val);
+		}
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 {
 	int ret, max;
 	const char *name = volume_control_names[ma->cfg->amp];
@@ -238,13 +310,13 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 
 	if (!name) {
 		WARN_ON_ONCE(1);
-		return;
+		return -EINVAL;
 	}
 
 	switch (ma->cfg->amp) {
 	case AMP_NONE:
 		WARN_ON_ONCE(1);
-		return;
+		return -EINVAL;
 	case AMP_TAS5770:
 		if (unlock)
 			max = TAS5770_0DB;
@@ -267,13 +339,41 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 
 	ret = snd_soc_limit_volume(&ma->card, name, max);
 	if (ret < 0)
-		dev_err(ma->card.dev, "Failed to %slock volume %s: %d\n",
-			unlock ? "un" : "", name, ret);
+		return ret;
+
+	if (!unlock) {
+		ret = macaudio_vlimit_sync(ma);
+		if (ret < 0)
+			return ret;
+	}
+
+	return macaudio_vlimit_count(ma) == ma->speaker_volume_count ? 0 : -ENODEV;
+}
+
+static void macaudio_stop_speakers(struct macaudio_snd_data *ma)
+{
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_pcm_substream *fe;
+	struct snd_soc_dpcm *dpcm;
+
+	snd_soc_dpcm_mutex_lock(&ma->card);
+	for_each_card_rtds(&ma->card, rtd) {
+		if (!rtd->dai_link->no_pcm ||
+		    !ma->link_props[rtd->dai_link->id].is_speakers)
+			continue;
+
+		for_each_dpcm_fe(rtd, SNDRV_PCM_STREAM_PLAYBACK, dpcm) {
+			fe = snd_soc_dpcm_get_substream(dpcm->fe, SNDRV_PCM_STREAM_PLAYBACK);
+			snd_pcm_stop_xrun(fe);
+		}
+	}
+	snd_soc_dpcm_mutex_unlock(&ma->card);
 }
 
 static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 {
-	int i;
+	int i, ret;
+	unsigned int matches = 0;
 	bool unlock = true;
 	struct snd_kcontrol *kctl;
 	const char *reason;
@@ -283,6 +383,13 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 	/* Do nothing if there is no safety configured */
 	if (!ma->has_safety)
+		return;
+
+	/*
+	 * A failed cap is final until the card is bound again: the state of
+	 * the amplifiers is unknown, so never unlock on a later ping.
+	 */
+	if (ma->speaker_volume_lock_failed)
 		return;
 
 	/* Check that someone is holding the main lock */
@@ -299,9 +406,10 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 	/* Check that *every* limited control is locked by the same owner */
 	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
-		if(!snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
+		if (!macaudio_is_speaker_volume(ma, kctl))
 			continue;
 
+		matches++;
 		for (i = 0; i < kctl->count; i++) {
 			if (kctl->vd[i].owner != ma->speaker_lock_owner) {
 				reason = "Not all child controls locked by the same process";
@@ -310,20 +418,49 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		}
 	}
 
-
-	if (unlock != ma->speaker_volume_unlocked) {
-		if (unlock) {
-			dev_info(ma->card.dev, "Speaker volumes unlocked\n");
-		} else  {
-			dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
-			ma->speaker_volume_was_locked = true;
-		}
-
-		macaudio_vlimit_unlock(ma, unlock);
-		ma->speaker_volume_unlocked = unlock;
-		snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
-			       &ma->speaker_lock_kctl->id);
+	if (matches != ma->speaker_volume_count) {
+		reason = "Speaker volume controls missing";
+		unlock = false;
 	}
+
+	if (unlock == ma->speaker_volume_unlocked)
+		return;
+
+	ret = macaudio_vlimit_unlock(ma, unlock);
+	if (ret < 0 && unlock) {
+		dev_err_ratelimited(ma->card.dev,
+				    "Failed to unlock speaker volumes: %d\n", ret);
+		unlock = false;
+		reason = "Unlock failed";
+		ret = macaudio_vlimit_unlock(ma, false);
+	}
+
+	if (ret < 0) {
+		dev_err(ma->card.dev,
+			"Failed to lock speaker volumes: %d, speakers disabled until the card is bound again\n",
+			ret);
+		/* The speaker backend and its frontends refuse to run from here on */
+		WRITE_ONCE(ma->speaker_volume_lock_failed, true);
+		ma->speaker_volume_was_locked = true;
+		if (ma->speaker_volume_unlocked) {
+			ma->speaker_volume_unlocked = false;
+			snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+				       &ma->speaker_lock_kctl->id);
+		}
+		macaudio_stop_speakers(ma);
+		return;
+	}
+
+	if (unlock) {
+		dev_info(ma->card.dev, "Speaker volumes unlocked\n");
+	} else if (ma->speaker_volume_unlocked) {
+		dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
+		ma->speaker_volume_was_locked = true;
+	}
+
+	ma->speaker_volume_unlocked = unlock;
+	snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+		       &ma->speaker_lock_kctl->id);
 }
 
 static void macaudio_vlimit_enable_timeout(struct macaudio_snd_data *ma)
@@ -950,6 +1087,9 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 		case SNDRV_PCM_TRIGGER_START:
 		case SNDRV_PCM_TRIGGER_RESUME:
 		case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+			/* The volume cap could not be written: don't play */
+			if (READ_ONCE(ma->speaker_volume_lock_failed))
+				return -EIO;
 			ma->bes_active |= BIT(rtd->dai_link->id);
 			break;
 		case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -967,13 +1107,70 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 	return 0;
 }
 
+/*
+ * A frontend routed to the speakers must not prepare or start while the
+ * speaker volumes could not be capped either: its DAI starts before the
+ * backend's trigger could refuse, and a backend already prepared is not
+ * prepared again.
+ */
+static int macaudio_fe_check_speakers(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dpcm *dpcm;
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK ||
+	    !READ_ONCE(ma->speaker_volume_lock_failed))
+		return 0;
+
+	for_each_dpcm_be(rtd, SNDRV_PCM_STREAM_PLAYBACK, dpcm)
+		if (ma->link_props[dpcm->be->dai_link->id].is_speakers)
+			return -EIO;
+
+	return 0;
+}
+
+static int macaudio_fe_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		return macaudio_fe_check_speakers(substream);
+	default:
+		return 0;
+	}
+}
+
 static const struct snd_soc_ops macaudio_fe_ops = {
+	.prepare	= macaudio_fe_check_speakers,
+	.trigger	= macaudio_fe_trigger,
 	.startup	= macaudio_fe_startup,
 	.shutdown	= macaudio_dpcm_shutdown,
 	.hw_params	= macaudio_fe_hw_params,
 };
 
+/*
+ * While the speaker volumes could not be capped, refuse the speaker
+ * backend before its DAIs start or the amplifiers are unmuted, not only in
+ * the trigger.
+ */
+static int macaudio_be_check_speakers(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(rtd->card);
+	struct macaudio_link_props *props = &ma->link_props[rtd->dai_link->id];
+
+	if (props->is_speakers && substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    READ_ONCE(ma->speaker_volume_lock_failed))
+		return -EIO;
+
+	return 0;
+}
+
 static const struct snd_soc_ops macaudio_be_ops = {
+	.startup	= macaudio_be_check_speakers,
+	.prepare	= macaudio_be_check_speakers,
 	.hw_free	= macaudio_be_hw_free,
 	.shutdown	= macaudio_dpcm_shutdown,
 	.hw_params	= macaudio_dpcm_hw_params,
@@ -1196,6 +1393,7 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
 	struct snd_soc_pcm_runtime *rtd;
 	struct snd_soc_dai *dai;
+	unsigned int count;
 	int ret, i;
 
 	/* Add the dynamic DAPM routes */
@@ -1227,10 +1425,27 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 	if (ma->has_safety) {
 		ma->speaker_lock_kctl = snd_soc_card_get_kcontrol(card,
 								  "Speaker Volume Unlock");
+		if (!ma->speaker_lock_kctl)
+			return dev_err_probe(card->dev, -ENODEV,
+					     "No speaker volume unlock control\n");
+
+		count = 0;
+		for_each_card_rtds(card, rtd)
+			if (rtd->dai_link->no_pcm &&
+			    ma->link_props[rtd->dai_link->id].is_speakers)
+				count += rtd->dai_link->num_codecs;
 
 		guard(rwsem_read)(&card->snd_card->controls_rwsem);
 		guard(mutex)(&ma->volume_lock_mutex);
-		macaudio_vlimit_unlock(ma, false);
+		/* ma outlives the card: start every bind from the locked state */
+		ma->speaker_volume_count = count;
+		ma->speaker_volume_unlocked = false;
+		WRITE_ONCE(ma->speaker_volume_lock_failed, false);
+		ret = macaudio_vlimit_unlock(ma, false);
+		if (ret < 0)
+			return dev_err_probe(card->dev, ret,
+					     "Failed to lock %u speaker volumes\n",
+					     ma->speaker_volume_count);
 	}
 
 	return 0;
