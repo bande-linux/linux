@@ -30,7 +30,12 @@ use core::sync::atomic::{
 };
 use macros::vtable;
 
+/// Size of the ASC control MMIO region.
+pub const ASC_CTL_SIZE: usize = 0x4000;
+
 register! {
+    base: Region<ASC_CTL_SIZE>;
+
     /// ASC CPU control register
     pub ASC_CPU_CONTROL(u32) @ 0x44 {
         /// CPU run bit.

@@ -18,15 +18,15 @@ use kernel::{
     },
     platform,
     prelude::*,
-    soc::apple::rtkit::ASC_CPU_CONTROL,
+    soc::apple::rtkit::{
+        ASC_CPU_CONTROL,
+        ASC_CTL_SIZE, //
+    },
     sync::{
         aref::ARef,
         Arc, //
     }, //
 };
-
-/// Size of the ASC control MMIO region.
-pub(crate) const ASC_CTL_SIZE: usize = 0x4000;
 
 /// Size of the SGX MMIO region.
 pub(crate) const SGX_SIZE: usize = 0x1000000;
