@@ -193,10 +193,12 @@ dptxport_call_get_drive_settings(struct apple_epic_service *service,
 	 * retcode appears to be lane count, seeing 2 for USB-C dp alt mode
 	 * with lanes splitted for DP/USB3.
 	 */
-	if (le32_to_cpu(reply->retcode) != dptx->lane_count)
+	if (!dptx->lane_count_set)
+		dptx->lane_count = le32_to_cpu(reply->retcode);
+	else if (le32_to_cpu(reply->retcode) != dptx->lane_count)
 		dev_err(service->ep->dcp->dev,
-			"get_drive_settings: unexpected retcode %d\n",
-			reply->retcode);
+			"get_drive_settings: DCP lane count %u, driver %u\n",
+			le32_to_cpu(reply->retcode), dptx->lane_count);
 
 	reply->retcode = cpu_to_le32(dptx->lane_count);
 	reply->unk5 = cpu_to_le32(dptx->drive_settings[0]);
@@ -327,6 +329,7 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 		dptx->phy_ops.dp.set_lanes = 0;
 	}
 	dptx->lane_count = lane_count;
+	dptx->lane_count_set = true;
 
 	reply->retcode = cpu_to_le32(retcode);
 	reply->lane_count = cpu_to_le64(lane_count);
@@ -617,6 +620,7 @@ int dptxep_init(struct apple_dcp *dcp)
 	for (port = 0; port < ARRAY_SIZE(dcp->dptxport); port++) {
 		dcp->dptxport[port].max_lane_count = 0;
 		dcp->dptxport[port].lane_count = 0;
+		dcp->dptxport[port].lane_count_set = false;
 	}
 
 	init_completion(&dcp->dptxport[0].enable_completion);
