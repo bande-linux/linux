@@ -160,8 +160,11 @@
 	sound {
 		compatible = "apple,j313-macaudio", "apple,macaudio";
 		model = "MacBook Air J313";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
 		dai-link@0 {
+			reg = <0>;
 			link-name = "Speakers";
 			dai-tdm-idle-mode-0 = "zero";
 			dai-tdm-idle-mode-1 = "zero";
@@ -175,6 +178,7 @@
 		};
 
 		dai-link@1 {
+			reg = <1>;
 			link-name = "Headphone Jack";
 
 			cpu {
