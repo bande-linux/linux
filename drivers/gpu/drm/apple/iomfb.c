@@ -494,8 +494,8 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 
 	if (dcp->hdmi_hpd && !gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
 		dcp->valid_mode = false;
-		WRITE_ONCE(dcp->modeset_failed, true);
-		return 0;
+		ret = -EIO;
+		goto out;
 	}
 
 	switch (dcp->fw_compat) {
@@ -514,6 +514,7 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 		break;
 	}
 
+out:
 	if (ret == -EIO && dcp->connector &&
 	    dcp->modeset_retries < DCP_MODESET_RETRIES) {
 		dcp->modeset_retries++;

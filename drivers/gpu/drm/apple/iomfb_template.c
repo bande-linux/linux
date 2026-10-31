@@ -1092,10 +1092,10 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 		return;
 
 	spin_lock(&dcp->hotplug_lock);
-	if (!*connected)
-		dcp->hotplug_seq++;
 	ignored = dcp->suspended;
 	deferred = !ignored && dcp->during_modeset;
+	if (ignored && !*connected)
+		dcp->hotplug_seq++;
 	if (deferred) {
 		dcp->hotplug_deferred = true;
 		dcp->hotplug_deferred_connected = !!*connected;
@@ -1335,7 +1335,7 @@ static int dcp_prepare_mode(struct apple_dcp *dcp,
 	if (!match) {
 		dev_err(dcp->dev, "no match for " DRM_MODE_FMT "\n",
 			DRM_MODE_ARG(drm_mode));
-		return -EINVAL;
+		return -EIO;
 	}
 
 	cmode = dcp_color_mode_of(&mode);
