@@ -240,7 +240,7 @@ void dcp_hotplug(struct work_struct *work)
 
 	dcp = platform_get_drvdata(connector->dcp);
 	dev_info(dcp->dev, "%s() connected:%d valid_mode:%d nr_modes:%u\n", __func__,
-		 connector->connected, dcp->valid_mode, dcp->nr_modes);
+		 connector->connected, dcp->valid_mode, READ_ONCE(dcp->nr_modes));
 
 	if (!connector->connected) {
 		drm_edid_free(connector->drm_edid);

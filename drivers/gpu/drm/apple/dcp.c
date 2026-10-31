@@ -716,7 +716,7 @@ static void dcp_wake_publish_waiters(struct apple_dcp *dcp)
 /*
  * A display released and requested again while IOMFB was powered off was
  * published with empty TimingElements, ColorElements and DisplayAttributes
- * (DCP 13.5 trace, j473). firstClientOpen() makes the DCP send them at start.
+ * (DCP 13.5 trace, j473). At start the DCP sent them after firstClientOpen().
  */
 static void dcp_work_sink_modes(struct work_struct *work)
 {

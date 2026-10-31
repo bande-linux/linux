@@ -438,7 +438,7 @@ dcpep_cb_map_physical(struct apple_dcp *dcp, struct dcp_map_physical_req *req)
 
 	id = find_first_zero_bit(dcp->memdesc_map, DCP_MAX_MAPPINGS);
 	if (id >= DCP_MAX_MAPPINGS) {
-		dev_warn(dcp->dev, "DCP overflowed mapping table, ignoring\n");
+		dev_err(dcp->dev, "DCP overflowed mapping table at %llx\n", req->paddr);
 		return (struct dcp_map_physical_resp){};
 	}
 
