@@ -609,6 +609,9 @@ int iomfb_start_rtkit(struct apple_dcp *dcp)
 void dcp_release_memdesc(struct apple_dcp *dcp,
 			 struct dcp_mem_descriptor *memdesc)
 {
+	if (memdesc->piodma_mapped && dcp->iommu_dom)
+		iommu_unmap(dcp->iommu_dom, memdesc->dva,
+			    ALIGN(memdesc->size, SZ_16K));
 	if (memdesc->buf) {
 		sg_free_table(&memdesc->map);
 		dma_free_coherent(dcp->dev, ALIGN(memdesc->size, SZ_16K),

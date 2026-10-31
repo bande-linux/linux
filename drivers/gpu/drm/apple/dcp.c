@@ -1290,6 +1290,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
+	unsigned int i;
 	int ret;
 
 	if (!dcp)
@@ -1313,6 +1314,13 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 	if (dcp->dptxep) {
 		afk_shutdown(dcp->dptxep);
 		dcp->dptxep = NULL;
+		for (i = 0; i < ARRAY_SIZE(dcp->dptxport); i++) {
+			dcp->dptxport[i].enabled = false;
+			dcp->dptxport[i].connected = false;
+			dcp->dptxport[i].max_lane_count = 0;
+			dcp->dptxport[i].lane_count = 0;
+			dcp->dptxport[i].lane_count_set = false;
+		}
 	}
 
 	if (dcp->ibootep) {
@@ -1346,8 +1354,11 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		dcp->rtk = NULL;
 	}
 	cancel_work_sync(&dcp->vblank_wq);
+	if (dcp->connector)
+		cancel_work_sync(&dcp->connector->hotplug_wq);
 
 	dcp_release_memdescs(dcp);
+	dcp_replace_modes(dcp, NULL, 0);
 
 	if (dcp->shmem) {
 		dma_free_coherent(dev, DCP_SHMEM_SIZE, dcp->shmem, dcp->shmem_iova);

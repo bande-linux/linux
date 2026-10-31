@@ -57,6 +57,7 @@ struct dcp_mem_descriptor {
 	dma_addr_t dva;
 	struct sg_table map;
 	u64 reg;
+	bool piodma_mapped;
 };
 
 /* Limit on call stack depth (arbitrary). Some nesting is required */
