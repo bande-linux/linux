@@ -45,6 +45,14 @@ void hci_codec_list_clear(struct list_head *codec_list)
 	}
 }
 
+static void hci_codec_add_without_caps(struct hci_dev *hdev,
+				       struct hci_op_read_local_codec_caps *cmd)
+{
+	hci_dev_lock(hdev);
+	hci_codec_list_add(&hdev->local_codecs, cmd, NULL, NULL, 0);
+	hci_dev_unlock(hdev);
+}
+
 static void hci_read_codec_capabilities(struct hci_dev *hdev, __u8 transport,
 					struct hci_op_read_local_codec_caps
 					*cmd)
@@ -65,18 +73,25 @@ static void hci_read_codec_capabilities(struct hci_dev *hdev, __u8 transport,
 			 * then just add codec to the list without caps
 			 */
 			if (!(hdev->commands[45] & 0x08)) {
-				hci_dev_lock(hdev);
-				hci_codec_list_add(&hdev->local_codecs, cmd,
-						   NULL, NULL, 0);
-				hci_dev_unlock(hdev);
+				hci_codec_add_without_caps(hdev, cmd);
 				continue;
 			}
 
 			skb = __hci_cmd_sync_sk(hdev, HCI_OP_READ_LOCAL_CODEC_CAPS,
 						sizeof(*cmd), cmd, 0, HCI_CMD_TIMEOUT, NULL);
 			if (IS_ERR(skb)) {
-				bt_dev_err(hdev, "Failed to read codec capabilities (%ld)",
-					   PTR_ERR(skb));
+				/* The controller listed the codec as supported,
+				 * so keep it even if its capabilities cannot be
+				 * read. Some controllers claim this command but
+				 * reject it with Invalid HCI Command Parameters
+				 * for every codec: only log that at debug level.
+				 */
+				if (PTR_ERR(skb) == -EINVAL)
+					bt_dev_dbg(hdev, "Codec capabilities rejected");
+				else
+					bt_dev_err(hdev, "Failed to read codec capabilities (%ld)",
+						   PTR_ERR(skb));
+				hci_codec_add_without_caps(hdev, cmd);
 				continue;
 			}
 
@@ -111,8 +126,11 @@ skip_caps_parse:
 			hci_codec_list_add(&hdev->local_codecs, cmd, rp,
 					   (__u8 *)rp + sizeof(*rp), len);
 			hci_dev_unlock(hdev);
+			kfree_skb(skb);
+			continue;
 error:
 			kfree_skb(skb);
+			hci_codec_add_without_caps(hdev, cmd);
 		}
 	}
 }
