@@ -345,7 +345,8 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 	ret = macaudio_vlimit_unlock(ma, unlock);
 	if (ret < 0 && unlock) {
-		dev_err(ma->card.dev, "Failed to unlock speaker volumes: %d\n", ret);
+		dev_err_ratelimited(ma->card.dev,
+				    "Failed to unlock speaker volumes: %d\n", ret);
 		unlock = false;
 		reason = "Unlock failed";
 		ret = macaudio_vlimit_unlock(ma, false);
@@ -354,8 +355,14 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 	if (ret < 0) {
 		dev_err_ratelimited(ma->card.dev,
 				    "Failed to lock speaker volumes: %d\n", ret);
-		ma->speaker_volume_lock_failed = true;
+		/* macaudio_be_trigger() refuses to start the speakers from here on */
+		WRITE_ONCE(ma->speaker_volume_lock_failed, true);
 		ma->speaker_volume_was_locked = true;
+		if (ma->speaker_volume_unlocked) {
+			ma->speaker_volume_unlocked = false;
+			snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+				       &ma->speaker_lock_kctl->id);
+		}
 		macaudio_stop_speakers(ma);
 		schedule_delayed_work(&ma->lock_retry_work,
 				      msecs_to_jiffies(SPEAKER_LOCK_TIMEOUT));
@@ -369,7 +376,7 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		ma->speaker_volume_was_locked = true;
 	}
 
-	ma->speaker_volume_lock_failed = false;
+	WRITE_ONCE(ma->speaker_volume_lock_failed, false);
 	if (unlock != ma->speaker_volume_unlocked) {
 		ma->speaker_volume_unlocked = unlock;
 		snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
@@ -1020,6 +1027,9 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 		case SNDRV_PCM_TRIGGER_START:
 		case SNDRV_PCM_TRIGGER_RESUME:
 		case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+			/* The volume cap could not be written: don't play */
+			if (READ_ONCE(ma->speaker_volume_lock_failed))
+				return -EIO;
 			set_bit(rtd->dai_link->id, &ma->bes_active);
 			break;
 		case SNDRV_PCM_TRIGGER_SUSPEND:
