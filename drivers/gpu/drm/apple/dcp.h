@@ -61,6 +61,7 @@ int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port);
 int iomfb_start_rtkit(struct apple_dcp *dcp);
 void iomfb_shutdown(struct apple_dcp *dcp);
 void dcp_release_memdescs(struct apple_dcp *dcp);
+void dcp_hpd_suspend(struct platform_device *pdev);
 void dcp_hpd_resume(struct platform_device *pdev);
 bool dcp_replace_modes(struct apple_dcp *dcp, struct dcp_display_mode *modes,
 		       unsigned int nr_modes);

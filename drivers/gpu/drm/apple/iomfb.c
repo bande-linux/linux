@@ -8,6 +8,7 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iommu.h>
 #include <linux/kref.h>
 #include <linux/module.h>
@@ -235,6 +236,7 @@ void dcp_hotplug(struct work_struct *work)
 {
 	struct apple_connector *connector;
 	struct apple_dcp *dcp;
+	bool active;
 
 	connector = container_of(work, struct apple_connector, hotplug_wq);
 
@@ -252,7 +254,11 @@ void dcp_hotplug(struct work_struct *work)
 	 * display modes from atomic_flush, so userspace needs to trigger a
 	 * flush, or the CRTC gets no signal.
 	 */
-	if (connector->base.state && !dcp->valid_mode && connector->connected)
+	drm_modeset_lock(&connector->base.dev->mode_config.connection_mutex, NULL);
+	active = connector->base.state && connector->base.state->crtc &&
+		 connector->base.state->crtc->state->active;
+	drm_modeset_unlock(&connector->base.dev->mode_config.connection_mutex);
+	if (active && !dcp->valid_mode && connector->connected)
 		drm_connector_set_link_status_property(&connector->base,
 						       DRM_MODE_LINK_STATUS_BAD);
 
@@ -461,6 +467,7 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
+	struct drm_connector_state *conn_state;
 	struct drm_crtc_state *crtc_state;
 	int ret = -EIO;
 	bool modeset;
@@ -478,6 +485,11 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 	if (crtc_state->mode.hdisplay == 0 && crtc_state->mode.vdisplay == 0)
 		return 0;
 
+	if (dcp->hdmi_hpd && !gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
+		dcp->valid_mode = false;
+		return 0;
+	}
+
 	switch (dcp->fw_compat) {
 	case DCP_FIRMWARE_V_12_3:
 		ret = iomfb_modeset_v12_3(dcp, crtc_state);
@@ -494,9 +506,13 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 		break;
 	}
 
-	if (ret == -EIO && dcp->connector && !dcp->modeset_failed)
-		schedule_work(&dcp->connector->hotplug_wq);
-	dcp->modeset_failed = ret == -EIO;
+	if (ret == -EIO && dcp->connector) {
+		conn_state = drm_atomic_get_new_connector_state(commit,
+								&dcp->connector->base);
+		if (!conn_state || conn_state->link_status == DRM_MODE_LINK_STATUS_GOOD)
+			schedule_work(&dcp->connector->hotplug_wq);
+	}
+	WRITE_ONCE(dcp->modeset_failed, ret == -EIO);
 
 	return ret;
 }

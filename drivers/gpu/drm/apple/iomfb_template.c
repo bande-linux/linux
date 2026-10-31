@@ -285,16 +285,17 @@ static struct dcp_map_buf_resp dcpep_cb_map_piodma(struct apple_dcp *dcp,
 	/* use the piodma iommu domain to map against the right IOMMU */
 	ret = iommu_map_sgtable(dcp->iommu_dom, memdesc->dva, map,
 				IOMMU_READ | IOMMU_WRITE);
-	if (ret > 0)
-		memdesc->piodma_mapped = true;
 
 	/* HACK: expect size to be 16K aligned since the iommu API only maps
 	 *       full pages
 	 */
 	if (ret < 0 || ret != ALIGN(memdesc->size, SZ_16K)) {
 		dev_err(dcp->dev, "iommu_map_sgtable() returned %zd instead of expected buffer size of %zu\n", ret, memdesc->size);
+		if (ret > 0)
+			iommu_unmap(dcp->iommu_dom, memdesc->dva, ret);
 		goto reject;
 	}
+	memdesc->piodma_mapped = true;
 
 	return (struct dcp_map_buf_resp){ .dva = memdesc->dva };
 
@@ -586,9 +587,11 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
 		}
 
-		if (dcp_replace_modes(dcp, modes, nr_modes) && !dcp->main_display &&
+		if ((dcp_replace_modes(dcp, modes, nr_modes) ||
+		     READ_ONCE(dcp->modeset_failed)) && !dcp->main_display &&
 		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
+		WRITE_ONCE(dcp->publish_pending, false);
 		store_release_wake_up(&dcp->publish_seq, dcp->publish_seq + 1);
 
 		return parsed;
@@ -1062,9 +1065,6 @@ static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 
 	/* Hotplug invalidates mode. DRM doesn't always handle this. */
 	if (!connected) {
-		spin_lock(&dcp->hotplug_lock);
-		dcp->unplug_seq++;
-		spin_unlock(&dcp->hotplug_lock);
 		dcp->valid_mode = false;
 		/* after unplug swap will not complete until the next
 		 * set_digital_out_mode */
@@ -1072,6 +1072,9 @@ static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 	}
 
 	if (connector && connector->connected != connected) {
+		spin_lock(&dcp->hotplug_lock);
+		dcp->hotplug_seq++;
+		spin_unlock(&dcp->hotplug_lock);
 		connector->connected = connected;
 		dcp->valid_mode = false;
 		schedule_work(&connector->hotplug_wq);
@@ -1093,8 +1096,10 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 		return;
 
 	spin_lock(&dcp->hotplug_lock);
+	if (!*connected)
+		dcp->hotplug_seq++;
 	ignored = dcp->suspended;
-	deferred = dcp->during_modeset;
+	deferred = !ignored && dcp->during_modeset;
 	if (deferred) {
 		dcp->hotplug_deferred = true;
 		dcp->hotplug_deferred_connected = !!*connected;
@@ -1362,12 +1367,12 @@ static int dcp_prepare_mode(struct apple_dcp *dcp,
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
-	u32 result, unplugs;
+	u32 result, hotplugs;
 	int ret;
 
 	dcp->valid_mode = false;
 	spin_lock(&dcp->hotplug_lock);
-	unplugs = dcp->unplug_seq;
+	hotplugs = dcp->hotplug_seq;
 	spin_unlock(&dcp->hotplug_lock);
 
 	ret = dcp_prepare_mode(dcp, &crtc_state->mode);
@@ -1383,7 +1388,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	}
 
 	spin_lock(&dcp->hotplug_lock);
-	if (dcp->unplug_seq == unplugs)
+	if (dcp->hotplug_seq == hotplugs)
 		dcp->valid_mode = true;
 	else
 		ret = -EIO;
