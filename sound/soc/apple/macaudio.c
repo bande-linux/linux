@@ -1059,6 +1059,16 @@ static void macaudio_be_exit(struct snd_soc_pcm_runtime *rtd)
 		for_each_rtd_codec_dais(rtd, i, dai)
 			snd_soc_component_set_jack(dai->component, NULL, NULL);
 	}
+
+	/*
+	 * The volume limit works are card-wide, but this is the last point
+	 * of the card teardown where they can still run safely: the control
+	 * and PCM files are gone, the amplifier components not yet.
+	 */
+	if (props->is_speakers) {
+		cancel_work_sync(&ma->lock_update_work);
+		cancel_delayed_work_sync(&ma->lock_timeout_work);
+	}
 }
 
 static int macaudio_fe_init(struct snd_soc_pcm_runtime *rtd)
@@ -1738,16 +1748,8 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	return devm_snd_soc_register_card(dev, card);
 }
 
-static void macaudio_snd_platform_remove(struct platform_device *pdev)
-{
-	struct macaudio_snd_data *ma = dev_get_drvdata(&pdev->dev);
-
-	cancel_delayed_work_sync(&ma->lock_timeout_work);
-}
-
 static struct platform_driver macaudio_snd_driver = {
 	.probe = macaudio_snd_platform_probe,
-	.remove = macaudio_snd_platform_remove,
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = macaudio_snd_device_id,
