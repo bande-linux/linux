@@ -214,6 +214,8 @@ static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 	ret = dwc3_core_probe(&probe_data);
 	if (ret) {
 		devres_release_group(appledwc->dev, group);
+		/* The PHY references are gone, make dwc3_core_init() get them again */
+		appledwc->dwc.phys_ready = false;
 		return ret;
 	}
 	devres_close_group(appledwc->dev, group);
