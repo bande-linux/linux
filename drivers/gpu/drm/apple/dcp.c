@@ -507,6 +507,23 @@ void dcp_dptx_oob_hotplug(struct platform_device *pdev, bool connected)
 	spin_unlock_irqrestore(&dcp->oob_hpd_lock, flags);
 }
 
+/* Out-of-band HPD events are taken from component bind until unbind */
+static void dcp_oob_hpd_start(struct apple_dcp *dcp)
+{
+	spin_lock_irq(&dcp->oob_hpd_lock);
+	dcp->oob_hpd_events = 0;
+	dcp->oob_hpd_stopped = false;
+	spin_unlock_irq(&dcp->oob_hpd_lock);
+}
+
+static void dcp_oob_hpd_stop(struct apple_dcp *dcp)
+{
+	spin_lock_irq(&dcp->oob_hpd_lock);
+	dcp->oob_hpd_stopped = true;
+	spin_unlock_irq(&dcp->oob_hpd_lock);
+	cancel_work_sync(&dcp->oob_hpd_wq);
+}
+
 static irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
 {
 	struct apple_dcp *dcp = data;
@@ -818,11 +835,6 @@ static void dcp_stop_hpd_work(struct apple_dcp *dcp)
 	cancel_work_sync(&dcp->hpd_resume_wq);
 	cancel_work_sync(&dcp->sink_modes_wq);
 	cancel_delayed_work_sync(&dcp->release_wq);
-
-	spin_lock_irq(&dcp->oob_hpd_lock);
-	dcp->oob_hpd_stopped = true;
-	spin_unlock_irq(&dcp->oob_hpd_lock);
-	cancel_work_sync(&dcp->oob_hpd_wq);
 }
 
 void dcp_poweron(struct platform_device *pdev)
@@ -1180,6 +1192,8 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	u32 cpu_ctrl;
 	int ret;
 
+	dcp_oob_hpd_start(dcp);
+
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(42));
 	if (ret)
 		return ret;
@@ -1203,10 +1217,6 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);
 	INIT_WORK(&dcp->sink_modes_wq, dcp_work_sink_modes);
-	INIT_WORK(&dcp->oob_hpd_wq, dcp_work_oob_hpd);
-	spin_lock_init(&dcp->oob_hpd_lock);
-	dcp->oob_hpd_events = 0;
-	dcp->oob_hpd_stopped = false;
 	INIT_WORK(&dcp->hpd_resume_wq, dcp_work_hpd_resume);
 	INIT_DELAYED_WORK(&dcp->release_wq, dcp_work_release_display);
 	dcp->powered = false;
@@ -1324,6 +1334,7 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 	if (dcp->hdmi_hpd_irq)
 		disable_irq(dcp->hdmi_hpd_irq);
 	dcp_stop_hpd_work(dcp);
+	dcp_oob_hpd_stop(dcp);
 
 	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
 		cancel_work_sync(&dcp->bl_register_wq);
@@ -1539,6 +1550,10 @@ static int dcp_platform_probe(struct platform_device *pdev)
 		}
 	}
 
+	spin_lock_init(&dcp->oob_hpd_lock);
+	dcp->oob_hpd_stopped = true;
+	INIT_WORK(&dcp->oob_hpd_wq, dcp_work_oob_hpd);
+
 	ret = component_add(&pdev->dev, &dcp_comp_ops);
 	if (ret)
 		typec_mux_put(dcp->typec_mux);
@@ -1589,9 +1604,6 @@ static int dcp_platform_resume(struct device *dev)
 		mutex_lock(&dcp->power_mutex);
 		dcp->stopping = false;
 		mutex_unlock(&dcp->power_mutex);
-		spin_lock_irq(&dcp->oob_hpd_lock);
-		dcp->oob_hpd_stopped = false;
-		spin_unlock_irq(&dcp->oob_hpd_lock);
 		enable_irq(dcp->hdmi_hpd_irq);
 		schedule_work(&dcp->hpd_resume_wq);
 	}
