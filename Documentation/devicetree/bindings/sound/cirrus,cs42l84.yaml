@@ -36,7 +36,10 @@ required:
   - compatible
   - reg
 
-additionalProperties: false
+allOf:
+  - $ref: dai-common.yaml#
+
+unevaluatedProperties: false
 
 examples:
   - |
@@ -52,5 +55,6 @@ examples:
           reset-gpios = <&pinctrl_nub 4 GPIO_ACTIVE_LOW>;
           interrupts-extended = <&pinctrl_ap 180 IRQ_TYPE_LEVEL_LOW>;
           #sound-dai-cells = <0>;
+          sound-name-prefix = "Jack";
       };
     };
