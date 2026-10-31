@@ -1254,6 +1254,7 @@ static void drm_core_exit(void)
 	drm_debugfs_remove_root();
 	drm_sysfs_destroy();
 	WARN_ON(!xa_empty(&drm_minors_xa));
+	drm_connector_oob_hotplug_cleanup();
 	drm_connector_ida_destroy();
 }
 

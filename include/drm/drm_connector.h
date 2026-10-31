@@ -1799,6 +1799,12 @@ struct drm_connector_funcs {
 	 *
 	 * This will get called when a hotplug-event for a drm-connector
 	 * has been received from a source outside the display driver / device.
+	 *
+	 * It is called with a global mutex held that serialises all
+	 * out-of-band hotplug events, so it should not block for long and must
+	 * not report an out-of-band event itself. It can be called with
+	 * connected more than once in a row, also when the connector registers
+	 * and the last state reported for its fwnode was connected.
 	 */
 	void (*oob_hotplug_event)(struct drm_connector *connector,
 				  enum drm_connector_status status);

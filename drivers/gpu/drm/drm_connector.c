@@ -81,6 +81,26 @@
 static DEFINE_MUTEX(connector_list_lock);
 static LIST_HEAD(connector_list);
 
+/*
+ * fwnodes whose last out-of-band hotplug state is connected. The state is
+ * replayed when a connector with that fwnode registers, so it is not lost
+ * when the display driver registers its connector after the event, or
+ * registers it again. oob_hotplug_lock serialises the reports and the replay.
+ * The list is changed with connector_list_lock held as well, so that
+ * drm_connector_register() can mark states for replay under that lock.
+ */
+struct drm_oob_hotplug_state {
+	struct list_head head;
+	struct fwnode_handle *fwnode;
+	bool replay; /* protected by connector_list_lock */
+};
+
+static DEFINE_MUTEX(oob_hotplug_lock);
+static LIST_HEAD(oob_hotplug_states);
+static void drm_connector_oob_hotplug_replay(struct work_struct *work);
+static DECLARE_WORK(oob_hotplug_replay_work, drm_connector_oob_hotplug_replay);
+static bool drm_connector_oob_hotplug_mark(struct drm_connector *connector);
+
 struct drm_conn_prop_enum_list {
 	int type;
 	const char *name;
@@ -887,6 +907,8 @@ int drm_connector_register(struct drm_connector *connector)
 
 	mutex_lock(&connector_list_lock);
 	list_add_tail(&connector->global_connector_list_entry, &connector_list);
+	if (drm_connector_oob_hotplug_mark(connector))
+		schedule_work(&oob_hotplug_replay_work);
 	mutex_unlock(&connector_list_lock);
 	goto unlock;
 
@@ -3671,6 +3693,45 @@ struct drm_connector *drm_connector_find_by_fwnode(struct fwnode_handle *fwnode)
 	return found;
 }
 
+/* Mark the states of a newly registered connector for replay */
+static bool drm_connector_oob_hotplug_mark(struct drm_connector *connector)
+{
+	struct fwnode_handle *fwnode = connector->fwnode;
+	struct drm_oob_hotplug_state *state;
+	bool found = false;
+
+	lockdep_assert_held(&connector_list_lock);
+
+	if (!fwnode)
+		return false;
+
+	list_for_each_entry(state, &oob_hotplug_states, head) {
+		if (state->fwnode == fwnode || state->fwnode == fwnode->secondary) {
+			state->replay = true;
+			found = true;
+		}
+	}
+
+	return found;
+}
+
+static void drm_connector_oob_hotplug_deliver(struct fwnode_handle *fwnode,
+					      enum drm_connector_status status)
+{
+	struct drm_connector *connector;
+
+	lockdep_assert_held(&oob_hotplug_lock);
+
+	connector = drm_connector_find_by_fwnode(fwnode);
+	if (IS_ERR(connector))
+		return;
+
+	if (connector->funcs->oob_hotplug_event)
+		connector->funcs->oob_hotplug_event(connector, status);
+
+	drm_connector_put(connector);
+}
+
 /**
  * drm_connector_oob_hotplug_event - Report out-of-band hotplug event to connector
  * @connector_fwnode: fwnode_handle to report the event on
@@ -3681,24 +3742,86 @@ struct drm_connector *drm_connector_find_by_fwnode(struct fwnode_handle *fwnode)
  * muxes the DisplayPort data and aux-lines but does not pass the altmode HPD
  * status bit to the GPU's DP HPD pin.
  *
- * This function can be used to report these out-of-band events after obtaining
- * a drm_connector reference through calling drm_connector_find_by_fwnode().
+ * This function can be used to report these out-of-band events. The event is
+ * passed to the oob_hotplug_event hook of the registered connector that has
+ * @connector_fwnode.
+ *
+ * A connected state is also remembered until a later event reports another
+ * state, and passed again to a connector with @connector_fwnode that registers
+ * later. So a caller need not know whether the display driver has registered
+ * its connector yet. A caller that reported connected must report disconnected
+ * when it goes away.
  */
 void drm_connector_oob_hotplug_event(struct fwnode_handle *connector_fwnode,
 				     enum drm_connector_status status)
 {
-	struct drm_connector *connector;
+	struct drm_oob_hotplug_state *state, *found = NULL;
 
-	connector = drm_connector_find_by_fwnode(connector_fwnode);
-	if (IS_ERR(connector))
+	if (!connector_fwnode)
 		return;
 
-	if (connector->funcs->oob_hotplug_event)
-		connector->funcs->oob_hotplug_event(connector, status);
+	mutex_lock(&oob_hotplug_lock);
 
-	drm_connector_put(connector);
+	list_for_each_entry(state, &oob_hotplug_states, head) {
+		if (state->fwnode == connector_fwnode) {
+			found = state;
+			break;
+		}
+	}
+
+	if (status == connector_status_connected && !found) {
+		found = kzalloc_obj(*found);
+		if (found) {
+			found->fwnode = fwnode_handle_get(connector_fwnode);
+			mutex_lock(&connector_list_lock);
+			list_add_tail(&found->head, &oob_hotplug_states);
+			mutex_unlock(&connector_list_lock);
+		}
+	} else if (status != connector_status_connected && found) {
+		mutex_lock(&connector_list_lock);
+		list_del(&found->head);
+		mutex_unlock(&connector_list_lock);
+		fwnode_handle_put(found->fwnode);
+		kfree(found);
+	}
+
+	drm_connector_oob_hotplug_deliver(connector_fwnode, status);
+
+	mutex_unlock(&oob_hotplug_lock);
 }
 EXPORT_SYMBOL(drm_connector_oob_hotplug_event);
+
+static void drm_connector_oob_hotplug_replay(struct work_struct *work)
+{
+	struct drm_oob_hotplug_state *state;
+	bool replay;
+
+	mutex_lock(&oob_hotplug_lock);
+	list_for_each_entry(state, &oob_hotplug_states, head) {
+		mutex_lock(&connector_list_lock);
+		replay = state->replay;
+		state->replay = false;
+		mutex_unlock(&connector_list_lock);
+
+		if (replay)
+			drm_connector_oob_hotplug_deliver(state->fwnode,
+							  connector_status_connected);
+	}
+	mutex_unlock(&oob_hotplug_lock);
+}
+
+void drm_connector_oob_hotplug_cleanup(void)
+{
+	struct drm_oob_hotplug_state *state, *next;
+
+	cancel_work_sync(&oob_hotplug_replay_work);
+
+	list_for_each_entry_safe(state, next, &oob_hotplug_states, head) {
+		list_del(&state->head);
+		fwnode_handle_put(state->fwnode);
+		kfree(state);
+	}
+}
 
 /**
  * drm_connector_get_color_format - Return connector color format of @conn_state
