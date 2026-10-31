@@ -489,9 +489,9 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
  * @name: name pattern
  * @max: new maximum limit
  *
- * Finds controls matching the given name (which can be either a name
- * verbatim, or a pattern starting with the wildcard '*') and sets
- * a platform volume limit on them.
+ * Finds volsw controls matching the given name (which can be either a
+ * name verbatim, or a pattern starting with the wildcard '*') and sets
+ * a platform volume limit on them. Controls of other types are skipped.
  *
  * Return 0 on success, else error. At least one control needs to match
  * the pattern.
@@ -508,7 +508,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		return -EINVAL;
 
 	list_for_each_entry(kctl, &card->snd_card->controls, list) {
-		if (!snd_soc_control_matches(kctl, name))
+		if (!snd_soc_control_matches(kctl, name) || !soc_is_volsw(kctl))
 			continue;
 
 		ret = soc_limit_volume(kctl, max);
