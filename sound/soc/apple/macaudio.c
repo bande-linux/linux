@@ -1065,6 +1065,22 @@ static const struct snd_soc_ops macaudio_be_ops = {
 	.trigger	= macaudio_be_trigger,
 };
 
+static void macaudio_be_set_tdm_idle(struct snd_soc_card *card,
+				     struct snd_soc_dai *dai,
+				     const struct ma_codec_idle *idle)
+{
+	int ret;
+
+	if (!idle->idle_mode)
+		return;
+
+	ret = snd_soc_dai_set_tdm_idle(dai, idle->idle_mask, 0,
+				       idle->idle_mode, 0);
+	if (ret)
+		dev_warn(card->dev, "%s: failed to set TDM idle mode: %d\n",
+			 dai->name, ret);
+}
+
 static int macaudio_be_assign_tdm(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_card *card = rtd->card;
@@ -1081,8 +1097,9 @@ static int macaudio_be_assign_tdm(struct snd_soc_pcm_runtime *rtd)
 	nslots = __fls(mask) + 1;
 
 	if (rtd->dai_link->num_codecs == 1) {
-		ret = snd_soc_dai_set_tdm_slot(snd_soc_rtd_to_codec(rtd, 0), mask,
-					       0, nslots, MACAUDIO_SLOTWIDTH);
+		dai = snd_soc_rtd_to_codec(rtd, 0);
+		ret = snd_soc_dai_set_tdm_slot(dai, mask, 0, nslots,
+					       MACAUDIO_SLOTWIDTH);
 
 		/*
 		 * Headphones get a pass on -ENOTSUPP (see the comment
@@ -1090,8 +1107,12 @@ static int macaudio_be_assign_tdm(struct snd_soc_pcm_runtime *rtd)
 		 */
 		if (ret == -ENOTSUPP && props->is_headphones)
 			return 0;
+		if (ret)
+			return ret;
 
-		return ret;
+		macaudio_be_set_tdm_idle(card, dai, &props->codecs[0]);
+
+		return 0;
 	}
 
 	for_each_rtd_codec_dais(rtd, i, dai) {
@@ -1103,13 +1124,7 @@ static int macaudio_be_assign_tdm(struct snd_soc_pcm_runtime *rtd)
 		if (ret)
 			return ret;
 
-		if (props->codecs[i].idle_mode) {
-			ret = snd_soc_dai_set_tdm_idle(dai, props->codecs[i].idle_mask,
-						       0, props->codecs[i].idle_mode, 0);
-			if (ret)
-				dev_warn(card->dev, "%s: failed to set TDM idle mode: %d\n",
-					 dai->name, ret);
-		}
+		macaudio_be_set_tdm_idle(card, dai, &props->codecs[i]);
 	}
 
 	return 0;
