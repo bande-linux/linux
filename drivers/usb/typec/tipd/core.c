@@ -932,9 +932,8 @@ static void cd321x_update_work(struct work_struct *work)
 		tps->partner = typec_register_partner(tps->port, &desc);
 		if (IS_ERR(tps->partner)) {
 			dev_warn(tps->dev, "%s: failed to register partner\n", __func__);
-			/* Make the next update see a changed partner and retry */
-			memset(&cd321x->cur_partner_identity, 0,
-			       sizeof(cd321x->cur_partner_identity));
+			/* Look disconnected so that the next update registers it again */
+			tps->partner = NULL;
 			return;
 		}
 
