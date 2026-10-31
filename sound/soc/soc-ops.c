@@ -538,8 +538,8 @@ EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
  * @name: name pattern
  * @active: non-zero to activate, zero to deactivate
  *
- * Return number of matching controls on success, else error.
- * No controls need to match.
+ * Return number of matching controls on success, else error. At least
+ * one control needs to match the pattern.
  */
 int snd_soc_deactivate_kctl(struct snd_soc_card *card,
 	const char *name, int active)
@@ -609,7 +609,7 @@ static int soc_set_enum_kctl(struct snd_kcontrol *kctl, const char *strval)
  * @value: string value to set the controls to
  *
  * Return number of matching and set controls on success, else error.
- * No controls need to match.
+ * At least one control needs to match the pattern.
  */
 int snd_soc_set_enum_kctl(struct snd_soc_card *card,
 	const char *name, const char *value)
