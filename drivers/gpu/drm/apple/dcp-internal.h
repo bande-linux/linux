@@ -191,6 +191,8 @@ struct apple_dcp {
 	bool suspended;
 	u32 hotplug_seq;
 	bool modeset_failed;
+	unsigned int modeset_retries;
+	bool hotplug_pending;
 	u32 publish_seq;
 	u32 connect_seq;
 	bool publish_pending;

@@ -867,13 +867,9 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp, bool open_client)
 			dev_info(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
 		else
 			dev_warn(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
-	} else {
-		drm_connector_set_link_status_property(&dcp->connector->base,
-						       DRM_MODE_LINK_STATUS_BAD);
-		dev_warn(dcp->dev, "wait for completion error: %d\n", ret);
 	}
 
-	kref_put(&cookie->refcount, release_wait_cookie);;
+	kref_put(&cookie->refcount, release_wait_cookie);
 
 	/* Force a brightness update after poweron, to restore the brightness */
 	dcp->brightness.update = true;

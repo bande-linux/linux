@@ -241,6 +241,12 @@ void dcp_hotplug(struct work_struct *work)
 	connector = container_of(work, struct apple_connector, hotplug_wq);
 
 	dcp = platform_get_drvdata(connector->dcp);
+	spin_lock(&dcp->hotplug_lock);
+	WRITE_ONCE(dcp->hotplug_pending, dcp->suspended);
+	spin_unlock(&dcp->hotplug_lock);
+	if (READ_ONCE(dcp->hotplug_pending))
+		return;
+
 	dev_info(dcp->dev, "%s() connected:%d valid_mode:%d nr_modes:%u\n", __func__,
 		 connector->connected, dcp->valid_mode, READ_ONCE(dcp->nr_modes));
 
@@ -255,8 +261,7 @@ void dcp_hotplug(struct work_struct *work)
 	 * flush, or the CRTC gets no signal.
 	 */
 	drm_modeset_lock(&connector->base.dev->mode_config.connection_mutex, NULL);
-	active = connector->base.state && connector->base.state->crtc &&
-		 connector->base.state->crtc->state->active;
+	active = connector->base.state && connector->base.state->crtc;
 	drm_modeset_unlock(&connector->base.dev->mode_config.connection_mutex);
 	if (active && !dcp->valid_mode && connector->connected)
 		drm_connector_set_link_status_property(&connector->base,
@@ -462,12 +467,14 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 	return found ? MODE_OK : MODE_BAD;
 }
 
+/* each failed modeset may block the commit tail for 8.5 s */
+#define DCP_MODESET_RETRIES 3
+
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 			    struct drm_atomic_commit *commit)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
-	struct drm_connector_state *conn_state;
 	struct drm_crtc_state *crtc_state;
 	int ret = -EIO;
 	bool modeset;
@@ -487,6 +494,7 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 
 	if (dcp->hdmi_hpd && !gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
 		dcp->valid_mode = false;
+		WRITE_ONCE(dcp->modeset_failed, true);
 		return 0;
 	}
 
@@ -506,11 +514,12 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 		break;
 	}
 
-	if (ret == -EIO && dcp->connector) {
-		conn_state = drm_atomic_get_new_connector_state(commit,
-								&dcp->connector->base);
-		if (!conn_state || conn_state->link_status == DRM_MODE_LINK_STATUS_GOOD)
-			schedule_work(&dcp->connector->hotplug_wq);
+	if (ret == -EIO && dcp->connector &&
+	    dcp->modeset_retries < DCP_MODESET_RETRIES) {
+		dcp->modeset_retries++;
+		schedule_work(&dcp->connector->hotplug_wq);
+	} else if (!ret) {
+		dcp->modeset_retries = 0;
 	}
 	WRITE_ONCE(dcp->modeset_failed, ret == -EIO);
 
