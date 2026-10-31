@@ -483,8 +483,10 @@ static int apple_drm_init(struct device *dev)
 	dev_set_drvdata(dev, apple);
 
 	ret = component_bind_all(dev, apple);
-	if (ret)
+	if (ret) {
+		dev_set_drvdata(dev, NULL);
 		return ret;
+	}
 
 	ret = drmm_mode_config_init(&apple->drm);
 	if (ret)
@@ -534,6 +536,7 @@ static int apple_drm_init(struct device *dev)
 
 err_unbind:
 	component_unbind_all(dev, NULL);
+	dev_set_drvdata(dev, NULL);
 	return ret;
 }
 
@@ -638,19 +641,44 @@ MODULE_DEVICE_TABLE(of, of_match);
 static int apple_platform_suspend(struct device *dev)
 {
 	struct apple_drm_private *apple = dev_get_drvdata(dev);
+	struct drm_connector_list_iter iter;
+	struct drm_connector *connector;
+	int ret;
 
-	if (apple)
-		return drm_mode_config_helper_suspend(&apple->drm);
+	if (!apple)
+		return 0;
 
-	return 0;
+	drm_connector_list_iter_begin(&apple->drm, &iter);
+	drm_for_each_connector_iter(connector, &iter)
+		dcp_hpd_suspend(to_apple_connector(connector)->dcp);
+	drm_connector_list_iter_end(&iter);
+
+	ret = drm_mode_config_helper_suspend(&apple->drm);
+	if (ret) {
+		drm_connector_list_iter_begin(&apple->drm, &iter);
+		drm_for_each_connector_iter(connector, &iter)
+			dcp_hpd_resume(to_apple_connector(connector)->dcp);
+		drm_connector_list_iter_end(&iter);
+	}
+
+	return ret;
 }
 
 static int apple_platform_resume(struct device *dev)
 {
 	struct apple_drm_private *apple = dev_get_drvdata(dev);
+	struct drm_connector_list_iter iter;
+	struct drm_connector *connector;
 
-	if (apple)
-		drm_mode_config_helper_resume(&apple->drm);
+	if (!apple)
+		return 0;
+
+	drm_mode_config_helper_resume(&apple->drm);
+
+	drm_connector_list_iter_begin(&apple->drm, &iter);
+	drm_for_each_connector_iter(connector, &iter)
+		dcp_hpd_resume(to_apple_connector(connector)->dcp);
+	drm_connector_list_iter_end(&iter);
 
 	return 0;
 }

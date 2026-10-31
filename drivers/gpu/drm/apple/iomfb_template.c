@@ -291,8 +291,11 @@ static struct dcp_map_buf_resp dcpep_cb_map_piodma(struct apple_dcp *dcp,
 	 */
 	if (ret < 0 || ret != ALIGN(memdesc->size, SZ_16K)) {
 		dev_err(dcp->dev, "iommu_map_sgtable() returned %zd instead of expected buffer size of %zu\n", ret, memdesc->size);
+		if (ret > 0)
+			iommu_unmap(dcp->iommu_dom, memdesc->dva, ret);
 		goto reject;
 	}
+	memdesc->piodma_mapped = true;
 
 	return (struct dcp_map_buf_resp){ .dva = memdesc->dva };
 
@@ -334,6 +337,7 @@ static void dcpep_cb_unmap_piodma(struct apple_dcp *dcp,
 	 *       full pages
 	 */
 	iommu_unmap(dcp->iommu_dom, memdesc->dva, ALIGN(memdesc->size, SZ_16K));
+	memdesc->piodma_mapped = false;
 }
 
 /*
@@ -442,7 +446,7 @@ dcpep_cb_map_physical(struct apple_dcp *dcp, struct dcp_map_physical_req *req)
 
 	id = find_first_zero_bit(dcp->memdesc_map, DCP_MAX_MAPPINGS);
 	if (id >= DCP_MAX_MAPPINGS) {
-		dev_warn(dcp->dev, "DCP overflowed mapping table, ignoring\n");
+		dev_err(dcp->dev, "DCP overflowed mapping table at %llx\n", req->paddr);
 		return (struct dcp_map_physical_resp){};
 	}
 
@@ -590,12 +594,12 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
 		}
 
-		if (dcp_replace_modes(dcp, modes, nr_modes) && !dcp->main_display &&
+		if ((dcp_replace_modes(dcp, modes, nr_modes) ||
+		     READ_ONCE(dcp->modeset_failed)) && !dcp->main_display &&
 		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
-		complete_all(&dcp->timings_done);
-		WRITE_ONCE(dcp->publish_seq, dcp->publish_seq + 1);
-		wake_up_var(&dcp->publish_seq);
+		WRITE_ONCE(dcp->publish_pending, false);
+		store_release_wake_up(&dcp->publish_seq, dcp->publish_seq + 1);
 
 		return parsed;
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
@@ -870,13 +874,9 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp, bool open_client)
 			dev_info(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
 		else
 			dev_warn(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
-	} else {
-		drm_connector_set_link_status_property(&dcp->connector->base,
-						       DRM_MODE_LINK_STATUS_BAD);
-		dev_warn(dcp->dev, "wait for completion error: %d\n", ret);
 	}
 
-	kref_put(&cookie->refcount, release_wait_cookie);;
+	kref_put(&cookie->refcount, release_wait_cookie);
 
 	/* Force a brightness update after poweron, to restore the brightness */
 	dcp->brightness.update = true;
@@ -934,8 +934,6 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 	struct dcp_wait_cookie *poff_cookie;
 	struct dcp_swap_start_req swap_req = { 0 };
 	struct DCP_FW_NAME(dcp_swap_submit_req) *swap = &DCP_FW_UNION(dcp->swap);
-
-	dcp->valid_mode = false;
 
 	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
 	if (!cookie)
@@ -1077,6 +1075,9 @@ static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 	}
 
 	if (connector && connector->connected != connected) {
+		spin_lock(&dcp->hotplug_lock);
+		dcp->hotplug_seq++;
+		spin_unlock(&dcp->hotplug_lock);
 		connector->connected = connected;
 		dcp->valid_mode = false;
 		schedule_work(&connector->hotplug_wq);
@@ -1085,7 +1086,7 @@ static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 
 static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 {
-	bool deferred;
+	bool deferred, ignored;
 
 	/* DCP issues hotplug_gated callbacks after SetPowerState() calls on
 	 * devices with display (macbooks, imacs). This must not result in
@@ -1098,14 +1099,23 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 		return;
 
 	spin_lock(&dcp->hotplug_lock);
-	deferred = dcp->during_modeset;
+	ignored = dcp->suspended;
+	deferred = !ignored && dcp->during_modeset;
+	if (ignored && !*connected)
+		dcp->hotplug_seq++;
 	if (deferred) {
 		dcp->hotplug_deferred = true;
 		dcp->hotplug_deferred_connected = !!*connected;
 	}
 	spin_unlock(&dcp->hotplug_lock);
 
-	if (!deferred)
+	if (ignored && !*connected) {
+		dcp->valid_mode = false;
+		WRITE_ONCE(dcp->hotplug_pending, true);
+		schedule_work(&dcp->vblank_wq);
+	}
+
+	if (!deferred && !ignored)
 		dcp_apply_hotplug(dcp, !!*connected);
 }
 
@@ -1255,9 +1265,6 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 	}
 }
 
-/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
-#define DCP_PUBLISH_TIMEOUT msecs_to_jiffies(3000)
-
 static int dcp_set_mode(struct apple_dcp *dcp, u32 *result)
 {
 	struct dcp_wait_cookie *cookie;
@@ -1314,91 +1321,89 @@ static int dcp_set_mode(struct apple_dcp *dcp, u32 *result)
 	return 0;
 }
 
-int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
-			       struct drm_crtc_state *crtc_state)
+static struct dcp_color_mode *dcp_color_mode_of(struct dcp_display_mode *mode)
 {
-	struct dcp_display_mode found, *mode = &found;
-	struct dcp_display_mode *match;
-	struct dcp_color_mode *cmode = NULL;
-	u32 result, seq;
-	int ret;
+	if (mode->color_mode_id == mode->sdr_rgb.id)
+		return &mode->sdr_rgb;
+	if (mode->color_mode_id == mode->sdr_444.id)
+		return &mode->sdr_444;
+	if (mode->color_mode_id == mode->sdr.id)
+		return &mode->sdr;
+	if (mode->color_mode_id == mode->best.id)
+		return &mode->best;
+	return NULL;
+}
+
+static int dcp_prepare_mode(struct apple_dcp *dcp,
+			    const struct drm_display_mode *drm_mode)
+{
+	struct dcp_display_mode mode, *match;
+	struct dcp_color_mode *cmode;
 
 	mutex_lock(&dcp->modes_lock);
-	match = lookup_mode(dcp, &crtc_state->mode);
+	match = lookup_mode(dcp, drm_mode);
 	if (match)
-		found = *match;
+		mode = *match;
 	mutex_unlock(&dcp->modes_lock);
 	if (!match) {
 		dev_err(dcp->dev, "no match for " DRM_MODE_FMT "\n",
-			DRM_MODE_ARG(&crtc_state->mode));
+			DRM_MODE_ARG(drm_mode));
 		return -EIO;
 	}
 
+	cmode = dcp_color_mode_of(&mode);
 	dev_info(dcp->dev,
 		 "set_digital_out_mode(color:%d timing:%d) " DRM_MODE_FMT "\n",
-		 mode->color_mode_id, mode->timing_mode_id,
-		 DRM_MODE_ARG(&crtc_state->mode));
-	if (mode->color_mode_id == mode->sdr_rgb.id)
-		cmode = &mode->sdr_rgb;
-	else if (mode->color_mode_id == mode->sdr_444.id)
-		cmode = &mode->sdr_444;
-	else if (mode->color_mode_id == mode->sdr.id)
-		cmode = &mode->sdr;
-	else if (mode->color_mode_id == mode->best.id)
-		cmode = &mode->best;
+		 mode.color_mode_id, mode.timing_mode_id, DRM_MODE_ARG(drm_mode));
 	if (cmode)
 		dev_info(dcp->dev,
 			"set_digital_out_mode() color mode depth:%hhu format:%u "
 			"colorimetry:%u eotf:%u range:%u vrr:%u\n", cmode->depth,
 			cmode->format, cmode->colorimetry, cmode->eotf,
-			cmode->range, mode->vrr);
+			cmode->range, mode.vrr);
 
 	dcp->mode = (struct dcp_set_digital_out_mode_req){
-		.color_mode_id = mode->color_mode_id,
-		.timing_mode_id = mode->timing_mode_id
+		.color_mode_id = mode.color_mode_id,
+		.timing_mode_id = mode.timing_mode_id
 	};
 
 	/* Keep track of suspected vrr modes */
-	dcp->use_timestamps = mode->vrr;
+	dcp->use_timestamps = mode.vrr;
+
+	return 0;
+}
+
+int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
+			       struct drm_crtc_state *crtc_state)
+{
+	u32 result, hotplugs;
+	int ret;
 
 	dcp->valid_mode = false;
-	seq = READ_ONCE(dcp->publish_seq);
+	spin_lock(&dcp->hotplug_lock);
+	hotplugs = dcp->hotplug_seq;
+	spin_unlock(&dcp->hotplug_lock);
+
+	ret = dcp_prepare_mode(dcp, &crtc_state->mode);
+	if (ret)
+		return ret;
 	ret = dcp_set_mode(dcp, &result);
 	if (ret)
 		return ret;
-
-	/*
-	 * After s2idle the DCP rejected the modeset with "Modeset done, but
-	 * pipe not enabled" and published the display again later (j473).
-	 */
-	if (result &&
-	    wait_var_event_timeout(&dcp->publish_seq,
-				   READ_ONCE(dcp->publish_seq) != seq,
-				   DCP_PUBLISH_TIMEOUT)) {
-		mutex_lock(&dcp->modes_lock);
-		match = lookup_mode(dcp, &crtc_state->mode);
-		if (match)
-			dcp->mode = (struct dcp_set_digital_out_mode_req){
-				.color_mode_id = match->color_mode_id,
-				.timing_mode_id = match->timing_mode_id,
-			};
-		mutex_unlock(&dcp->modes_lock);
-		if (!match) {
-			dev_err(dcp->dev, "set_digital_out_mode failed: %#x\n", result);
-			return -EIO;
-		}
-		ret = dcp_set_mode(dcp, &result);
-		if (ret)
-			return ret;
-	}
 
 	if (result) {
 		dev_err(dcp->dev, "set_digital_out_mode failed: %#x\n", result);
 		return -EIO;
 	}
-	dcp->valid_mode = true;
 
-	return 0;
+	spin_lock(&dcp->hotplug_lock);
+	if (dcp->hotplug_seq == hotplugs)
+		dcp->valid_mode = true;
+	else
+		ret = -EIO;
+	spin_unlock(&dcp->hotplug_lock);
+
+	return ret;
 }
 
 void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, struct drm_atomic_commit *commit)

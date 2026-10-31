@@ -8,6 +8,7 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iommu.h>
 #include <linux/kref.h>
 #include <linux/module.h>
@@ -235,12 +236,19 @@ void dcp_hotplug(struct work_struct *work)
 {
 	struct apple_connector *connector;
 	struct apple_dcp *dcp;
+	bool active;
 
 	connector = container_of(work, struct apple_connector, hotplug_wq);
 
 	dcp = platform_get_drvdata(connector->dcp);
+	spin_lock(&dcp->hotplug_lock);
+	WRITE_ONCE(dcp->hotplug_pending, dcp->suspended);
+	spin_unlock(&dcp->hotplug_lock);
+	if (READ_ONCE(dcp->hotplug_pending))
+		return;
+
 	dev_info(dcp->dev, "%s() connected:%d valid_mode:%d nr_modes:%u\n", __func__,
-		 connector->connected, dcp->valid_mode, dcp->nr_modes);
+		 connector->connected, dcp->valid_mode, READ_ONCE(dcp->nr_modes));
 
 	if (!connector->connected) {
 		drm_edid_free(connector->drm_edid);
@@ -252,7 +260,10 @@ void dcp_hotplug(struct work_struct *work)
 	 * display modes from atomic_flush, so userspace needs to trigger a
 	 * flush, or the CRTC gets no signal.
 	 */
-	if (connector->base.state && !dcp->valid_mode && connector->connected)
+	drm_modeset_lock(&connector->base.dev->mode_config.connection_mutex, NULL);
+	active = connector->base.state && connector->base.state->crtc;
+	drm_modeset_unlock(&connector->base.dev->mode_config.connection_mutex);
+	if (active && !dcp->valid_mode && connector->connected)
 		drm_connector_set_link_status_property(&connector->base,
 						       DRM_MODE_LINK_STATUS_BAD);
 
@@ -456,6 +467,9 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 	return found ? MODE_OK : MODE_BAD;
 }
 
+/* each failed modeset may block the commit tail for 8.5 s */
+#define DCP_MODESET_RETRIES 3
+
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 			    struct drm_atomic_commit *commit)
 {
@@ -478,6 +492,12 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 	if (crtc_state->mode.hdisplay == 0 && crtc_state->mode.vdisplay == 0)
 		return 0;
 
+	if (dcp->hdmi_hpd && !gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
+		dcp->valid_mode = false;
+		ret = -EIO;
+		goto out;
+	}
+
 	switch (dcp->fw_compat) {
 	case DCP_FIRMWARE_V_12_3:
 		ret = iomfb_modeset_v12_3(dcp, crtc_state);
@@ -493,6 +513,16 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 			  dcp->fw_compat);
 		break;
 	}
+
+out:
+	if (ret == -EIO && dcp->connector &&
+	    dcp->modeset_retries < DCP_MODESET_RETRIES) {
+		dcp->modeset_retries++;
+		schedule_work(&dcp->connector->hotplug_wq);
+	} else if (!ret) {
+		dcp->modeset_retries = 0;
+	}
+	WRITE_ONCE(dcp->modeset_failed, ret == -EIO);
 
 	return ret;
 }
@@ -605,6 +635,9 @@ int iomfb_start_rtkit(struct apple_dcp *dcp)
 void dcp_release_memdesc(struct apple_dcp *dcp,
 			 struct dcp_mem_descriptor *memdesc)
 {
+	if (memdesc->piodma_mapped && dcp->iommu_dom)
+		iommu_unmap(dcp->iommu_dom, memdesc->dva,
+			    ALIGN(memdesc->size, SZ_16K));
 	if (memdesc->buf) {
 		sg_free_table(&memdesc->map);
 		dma_free_coherent(dcp->dev, ALIGN(memdesc->size, SZ_16K),
