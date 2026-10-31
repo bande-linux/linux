@@ -228,6 +228,7 @@ int avd_run_preamble(struct avd_ctx *ctx, struct avd_run *run);
 
 extern const struct avd_coded_fmt_ops avd_h264_fmt_ops;
 extern const struct avd_coded_fmt_ops avd_hevc_fmt_ops;
+extern const struct avd_coded_fmt_ops avd_vp9_fmt_ops;
 
 extern const struct v4l2_ioctl_ops avd_ioctl_ops;
 extern const struct vb2_ops avd_queue_ops;
