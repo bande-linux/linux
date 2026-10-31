@@ -27,6 +27,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/thermal.h>
 
 #define MAX_LABEL_LENGTH	32
 
@@ -79,8 +80,8 @@ struct macsmc_hwmon {
 	struct apple_smc *smc;
 	struct device *hwmon_dev;
 	struct hwmon_chip_info chip_info;
-	/* Chip + sensor types + NULL */
-	const struct hwmon_channel_info *channel_infos[1 + NUM_SENSOR_TYPES + 1];
+	/* Sensor types + NULL */
+	const struct hwmon_channel_info *channel_infos[NUM_SENSOR_TYPES + 1];
 	struct macsmc_hwmon_sensors temp;
 	struct macsmc_hwmon_sensors volt;
 	struct macsmc_hwmon_sensors curr;
@@ -650,6 +651,10 @@ static int macsmc_hwmon_populate_sensors(struct macsmc_hwmon *hwmon,
 					sensor->attrs |= HWMON_T_LABEL;
 
 				hwmon->temp.count++;
+			} else if (of_property_present(hwmon_node, "#thermal-sensor-cells")) {
+				/* A thermal zone may depend on this sensor */
+				dev_warn(hwmon->dev, "%pOFn: key not found, sensor skipped\n",
+					 key_node);
 			}
 		}
 	}
@@ -697,16 +702,10 @@ static void macsmc_hwmon_populate_fan_configs(u32 *configs, const struct macsmc_
 		configs[idx] = fans->fans[idx].attrs;
 }
 
-static const struct hwmon_channel_info *const macsmc_chip_channel_info =
-	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ);
-
 static int macsmc_hwmon_create_infos(struct macsmc_hwmon *hwmon)
 {
 	struct hwmon_channel_info *channel_info;
 	int i = 0;
-
-	/* chip */
-	hwmon->channel_infos[i++] = macsmc_chip_channel_info;
 
 	if (hwmon->curr.count) {
 		channel_info = &hwmon->curr.channel_info;
@@ -771,6 +770,91 @@ static int macsmc_hwmon_create_infos(struct macsmc_hwmon *hwmon)
 	return 0;
 }
 
+struct macsmc_hwmon_tz {
+	struct apple_smc *smc;
+	struct macsmc_hwmon_sensor *sensor;
+};
+
+static int macsmc_hwmon_tz_get_temp(struct thermal_zone_device *tz, int *temp)
+{
+	struct macsmc_hwmon_tz *tzs = thermal_zone_device_priv(tz);
+	long val;
+	int ret;
+
+	ret = macsmc_hwmon_read_key(tzs->smc, tzs->sensor, 1000, &val);
+	if (ret)
+		return ret;
+
+	/*
+	 * A NaN, an infinity or any other value out of range saturates. Do
+	 * not let one bad sample reach a critical trip and power off.
+	 */
+	if (val <= INT_MIN || val >= INT_MAX)
+		return -ENODATA;
+
+	*temp = val;
+
+	return 0;
+}
+
+static const struct thermal_zone_device_ops macsmc_hwmon_tz_ops = {
+	.get_temp = macsmc_hwmon_tz_get_temp,
+};
+
+/*
+ * The hwmon core can register thermal zones itself (HWMON_C_REGISTER_TZ), but
+ * it identifies a sensor by its channel index. Here the channel index depends
+ * on the order of the sensor nodes, which are spread over several shared .dtsi
+ * files, and on which keys the SMC firmware implements, because sensors whose
+ * key is missing are skipped. A thermal zone must never silently move to
+ * another sensor, so the sensor specifier is the SMC key instead.
+ */
+static int macsmc_hwmon_register_tzs(struct macsmc_hwmon *hwmon)
+{
+	struct macsmc_hwmon_tz *tzs;
+	u32 i;
+
+	/* Without THERMAL_OF the zone registration stub fails with -ENOTSUPP */
+	if (!IS_ENABLED(CONFIG_THERMAL_OF) ||
+	    !of_property_present(hwmon->dev->of_node, "#thermal-sensor-cells"))
+		return 0;
+
+	tzs = devm_kcalloc(hwmon->dev, hwmon->temp.count, sizeof(*tzs), GFP_KERNEL);
+	if (!tzs)
+		return -ENOMEM;
+
+	for (i = 0; i < hwmon->temp.count; i++) {
+		struct macsmc_hwmon_sensor *sensor = &hwmon->temp.sensors[i];
+		struct thermal_zone_device *tzd;
+
+		tzs[i].smc = hwmon->smc;
+		tzs[i].sensor = sensor;
+
+		/* The binding limits keys to [A-Za-z0-9], so this is positive */
+		tzd = devm_thermal_of_zone_register(hwmon->dev, sensor->macsmc_key,
+						    &tzs[i], &macsmc_hwmon_tz_ops);
+		if (IS_ERR(tzd)) {
+			/*
+			 * Keep the hwmon device either way: an error here can
+			 * come from an unrelated thermal zone in the DT.
+			 */
+			if (PTR_ERR(tzd) == -ENODEV)
+				dev_dbg(hwmon->dev, "%p4ch: no thermal zone\n",
+					&sensor->macsmc_key);
+			else
+				dev_warn(hwmon->dev,
+					 "%p4ch: failed to register thermal zone: %pe\n",
+					 &sensor->macsmc_key, tzd);
+			continue;
+		}
+
+		dev_dbg(hwmon->dev, "%p4ch: thermal zone %s\n",
+			&sensor->macsmc_key, thermal_zone_device_type(tzd));
+	}
+
+	return 0;
+}
+
 static int macsmc_hwmon_probe(struct platform_device *pdev)
 {
 	struct apple_smc *smc = dev_get_drvdata(pdev->dev.parent);
@@ -821,6 +905,10 @@ static int macsmc_hwmon_probe(struct platform_device *pdev)
 	if (IS_ERR(hwmon->hwmon_dev))
 		return dev_err_probe(hwmon->dev, PTR_ERR(hwmon->hwmon_dev),
 				     "Probing SMC hwmon device failed\n");
+
+	ret = macsmc_hwmon_register_tzs(hwmon);
+	if (ret)
+		return ret;
 
 	dev_dbg(hwmon->dev, "Registered SMC hwmon device. Sensors:\n");
 	dev_dbg(hwmon->dev,

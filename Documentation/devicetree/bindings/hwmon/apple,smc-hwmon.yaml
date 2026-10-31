@@ -40,6 +40,15 @@ properties:
   compatible:
     const: apple,smc-hwmon
 
+  "#thermal-sensor-cells":
+    const: 1
+    description:
+      The cell is the SMC key of the sensor, which must be the apple,key-id
+      of one of the temperature-* nodes of this node. It is a 32-bit number
+      with the first character of the key in the most significant byte.
+      Use APPLE_SMC_KEY() from <dt-bindings/hwmon/apple,smc-hwmon.h> to
+      write it.
+
 patternProperties:
   "^current-[A-Za-z0-9]{4}$":
     $ref: "#/$defs/sensor"
@@ -82,4 +91,11 @@ patternProperties:
     $ref: "#/$defs/sensor"
     unevaluatedProperties: false
 
-additionalProperties: false
+allOf:
+  - if:
+      required:
+        - "#thermal-sensor-cells"
+    then:
+      $ref: /schemas/thermal/thermal-sensor.yaml#
+
+unevaluatedProperties: false
