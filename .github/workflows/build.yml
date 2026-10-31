@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ unbound, 'prep/**' ]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       dev:
