@@ -723,6 +723,17 @@ static const struct hwmon_chip_info tas2770_hwmon_chip_info = {
 
 static const struct regmap_config tas2770_i2c_regmap;
 
+/*
+ * Assert SDZ and stop register I/O until the next component probe, which
+ * reinitialises the register cache, deasserts SDZ and resets the chip.
+ */
+static void tas2770_hw_shutdown(struct tas2770_priv *tas2770)
+{
+	gpiod_set_value_cansleep(tas2770->sdz_gpio, 0);
+	regcache_cache_only(tas2770->regmap, true);
+	regcache_mark_dirty(tas2770->regmap);
+}
+
 static int tas2770_codec_probe(struct snd_soc_component *component)
 {
 	struct tas2770_priv *tas2770 =
@@ -736,25 +747,37 @@ static int tas2770_codec_probe(struct snd_soc_component *component)
 		usleep_range(1000, 2000);
 	}
 
-	tas2770_reset(tas2770);
+	/* Leaves the cache-only mode a previous remove or failed probe set */
 	regmap_reinit_cache(tas2770->regmap, &tas2770_i2c_regmap);
+	tas2770_reset(tas2770);
 
 	if (tas2770->i_sense_slot != -1 && tas2770->v_sense_slot != -1) {
 		ret = tas2770_set_ivsense_transmit(tas2770, tas2770->i_sense_slot,
 						   tas2770->v_sense_slot);
 
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 	}
 
 	if (tas2770->pdm_slot != -1) {
 		ret = tas2770_set_pdm_transmit(tas2770, tas2770->pdm_slot);
 
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 	}
 
 	return 0;
+
+err_shutdown:
+	tas2770_hw_shutdown(tas2770);
+	return ret;
+}
+
+static void tas2770_codec_remove(struct snd_soc_component *component)
+{
+	struct tas2770_priv *tas2770 = snd_soc_component_get_drvdata(component);
+
+	tas2770_hw_shutdown(tas2770);
 }
 
 static DECLARE_TLV_DB_SCALE(tas2770_digital_tlv, 1100, 50, 0);
@@ -769,6 +792,7 @@ static const struct snd_kcontrol_new tas2770_snd_controls[] = {
 
 static const struct snd_soc_component_driver soc_component_driver_tas2770 = {
 	.probe			= tas2770_codec_probe,
+	.remove			= tas2770_codec_remove,
 	.suspend		= tas2770_codec_suspend,
 	.resume			= tas2770_codec_resume,
 	.controls		= tas2770_snd_controls,
