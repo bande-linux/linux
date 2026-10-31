@@ -792,10 +792,18 @@ static void dcp_work_hpd_resume(struct work_struct *work)
 		return;
 	}
 
-	if (dcp->connector && !dcp->connector->connected &&
-	    !READ_ONCE(dcp->powered) && !dcp->dptxport[0].connected &&
-	    !dcp_dptx_connect(dcp, 0))
+	if (!dcp->connector || dcp->connector->connected)
+		return;
+
+	if (READ_ONCE(dcp->powered)) {
+		spin_lock(&dcp->hotplug_lock);
+		dcp->hotplug_seq++;
+		spin_unlock(&dcp->hotplug_lock);
+		dcp->connector->connected = true;
+		schedule_work(&dcp->connector->hotplug_wq);
+	} else if (!dcp->dptxport[0].connected && !dcp_dptx_connect(dcp, 0)) {
 		schedule_work(&dcp->sink_modes_wq);
+	}
 }
 
 static void dcp_stop_hpd_work(struct apple_dcp *dcp)
@@ -876,8 +884,10 @@ void dcp_poweron(struct platform_device *pdev)
 		    !wait_var_event_timeout(&dcp->publish_seq,
 					    !READ_ONCE(dcp->publish_pending) ||
 					    READ_ONCE(dcp->crashed),
-					    DCP_PUBLISH_TIMEOUT))
+					    DCP_PUBLISH_TIMEOUT)) {
 			dev_err(dcp->dev, "display not published before modeset\n");
+			WRITE_ONCE(dcp->publish_pending, false);
+		}
 	}
 
 	if (!powered_on)

@@ -479,8 +479,10 @@ static int apple_drm_init(struct device *dev)
 	dev_set_drvdata(dev, apple);
 
 	ret = component_bind_all(dev, apple);
-	if (ret)
+	if (ret) {
+		dev_set_drvdata(dev, NULL);
 		return ret;
+	}
 
 	ret = drmm_mode_config_init(&apple->drm);
 	if (ret)
@@ -530,6 +532,7 @@ static int apple_drm_init(struct device *dev)
 
 err_unbind:
 	component_unbind_all(dev, NULL);
+	dev_set_drvdata(dev, NULL);
 	return ret;
 }
 
