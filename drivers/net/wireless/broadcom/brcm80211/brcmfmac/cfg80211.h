@@ -166,6 +166,7 @@ enum brcmf_mgmt_tx_status {
  * @bssid: bssid of joined/joining ibss.
  * @sec: security information.
  * @key: key information
+ * @is_okc: OKC is used for current connection.
  */
 struct brcmf_cfg80211_profile {
 	u8 bssid[ETH_ALEN];

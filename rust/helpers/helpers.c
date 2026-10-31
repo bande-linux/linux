@@ -60,6 +60,7 @@
 #include "dma-fence.c"
 #include "dma-mapping.c"
 #ifdef CONFIG_DMA_SHARED_BUFFER
+#include "dma_fence.c"
 #include "dma-resv.c"
 #endif
 #include "drm.c"
@@ -76,6 +77,7 @@
 #include "kunit.c"
 #include "list.c"
 #include "maple_tree.c"
+#include "math.c"
 #include "mm.c"
 #include "mutex.c"
 #include "net/genetlink.c"
@@ -88,6 +90,7 @@
 #include "processor.c"
 #include "property.c"
 #include "pwm.c"
+#include "ratelimit.c"
 #include "rbtree.c"
 #include "rcu.c"
 #include "refcount.c"

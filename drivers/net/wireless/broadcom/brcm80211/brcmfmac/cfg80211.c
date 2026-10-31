@@ -1817,20 +1817,23 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 	struct brcmf_pub *drvr = ifp->drvr;
 	s32 val;
 	s32 err;
+	s32 okc_enable;
 	const struct brcmf_tlv *rsn_ie;
 	const u8 *ie;
 	u32 ie_len;
+	bool fwsup_roam;
 	u32 offset;
 	u16 rsn_cap;
 	u32 mfp;
 	u16 count;
-	s32 okc_enable;
 	u16 pmkid_count;
 	const u8 *group_mgmt_cs = NULL;
 
 	profile->use_fwsup = BRCMF_PROFILE_FWSUP_NONE;
 	profile->is_ft = false;
 	profile->is_okc = false;
+	fwsup_roam = brcmf_feat_is_enabled(ifp, BRCMF_FEAT_FBT) ||
+		     brcmf_feat_is_enabled(ifp, BRCMF_FEAT_OKC);
 
 	if (!sme->crypto.n_akm_suites)
 		return 0;
@@ -1847,7 +1850,7 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 			val = WPA_AUTH_UNSPECIFIED;
 			if (sme->want_1x)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_1X;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_PSK:
@@ -1864,14 +1867,14 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 			val = WPA2_AUTH_UNSPECIFIED;
 			if (sme->want_1x)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_1X;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_8021X_SHA256:
 			val = WPA2_AUTH_1X_SHA256;
 			if (sme->want_1x)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_1X;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_PSK_SHA256:
@@ -1885,7 +1888,7 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 			profile->is_ft = true;
 			if (sme->want_1x)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_1X;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_FT_PSK:
@@ -1893,18 +1896,19 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 			profile->is_ft = true;
 			if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_FWSUP))
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_PSK;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_OWE:
 			val = WPA3_AUTH_OWE;
-			profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
+			if (fwsup_roam)
+				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_8021X_SUITE_B_192:
 			val = WPA3_AUTH_1X_SUITE_B_SHA384;
 			if (sme->want_1x)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_1X;
-			else
+			else if (fwsup_roam)
 				profile->use_fwsup = BRCMF_PROFILE_FWSUP_ROAM;
 			break;
 		case WLAN_AKM_SUITE_WFA_DPP:
@@ -1933,32 +1937,24 @@ brcmf_set_key_mgmt(struct net_device *ndev, struct cfg80211_connect_params *sme)
 			profile->use_fwsup = BRCMF_PROFILE_FWSUP_SAE;
 		}
 	}
-	if ((profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X) ||
-	    (profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM)) {
+	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X)
 		brcmf_dbg(INFO, "using 1X offload\n");
-		err = brcmf_fil_bsscfg_int_get(netdev_priv(ndev), "okc_enable",
+
+	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X ||
+	    profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM) {
+		err = brcmf_fil_bsscfg_int_get(ifp, "okc_enable",
 					       &okc_enable);
 		if (err) {
 			bphy_err(drvr, "get okc_enable failed (%d)\n", err);
 		} else {
-			brcmf_dbg(INFO, "get okc_enable (%d)\n", okc_enable);
-			profile->is_okc = okc_enable;
-		}
-	} else if (profile->use_fwsup != BRCMF_PROFILE_FWSUP_SAE &&
-		   (val == WPA3_AUTH_SAE_PSK)) {
-		brcmf_dbg(INFO, "not using SAE offload\n");
-		err = brcmf_fil_bsscfg_int_get(netdev_priv(ndev), "okc_enable",
-					       &okc_enable);
-		if (err) {
-			bphy_err(drvr, "get okc_enable failed (%d)\n", err);
-		} else {
-			brcmf_dbg(INFO, "get okc_enable (%d)\n", okc_enable);
+			brcmf_dbg(INFO, "okc_enable (%d)\n", okc_enable);
 			profile->is_okc = okc_enable;
 		}
 	}
-
 	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE)
 		brcmf_dbg(INFO, "using SAE offload\n");
+	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM)
+		brcmf_dbg(INFO, "using roaming offload\n");
 
 	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MFP))
 		goto skip_mfp_config;
@@ -2277,15 +2273,15 @@ brcmf_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev,
 			akm == WLAN_AKM_SUITE_FT_OVER_SAE;
 
 		if (params->crypto.psk && !is_sae_akm &&
-		    profile->use_fwsup != BRCMF_PROFILE_FWSUP_SAE &&
-		    profile->use_fwsup != BRCMF_PROFILE_FWSUP_PSK) {
-			if (WARN_ON(profile->use_fwsup !=
-				    BRCMF_PROFILE_FWSUP_NONE)) {
+		    profile->use_fwsup != BRCMF_PROFILE_FWSUP_SAE) {
+			if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_NONE) {
+				brcmf_dbg(INFO, "using PSK offload\n");
+				profile->use_fwsup = BRCMF_PROFILE_FWSUP_PSK;
+			} else if (WARN_ON(profile->use_fwsup !=
+					   BRCMF_PROFILE_FWSUP_PSK)) {
 				err = -EINVAL;
 				goto done;
 			}
-			brcmf_dbg(INFO, "using PSK offload\n");
-			profile->use_fwsup = BRCMF_PROFILE_FWSUP_PSK;
 		}
 		if (profile->use_fwsup != BRCMF_PROFILE_FWSUP_NONE) {
 			/* enable firmware supplicant for this interface */
@@ -2513,7 +2509,8 @@ done:
 
 static s32
 brcmf_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-		       int link_id, u8 key_idx, bool pairwise,
+		       int link_id, u8 key_idx,
+		       enum nl80211_key_type type,
 		       const u8 *mac_addr)
 {
 	struct brcmf_if *ifp = netdev_priv(wdev->netdev);
@@ -2551,7 +2548,8 @@ brcmf_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 
 static s32
 brcmf_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-		       int link_id, u8 key_idx, bool pairwise,
+		       int link_id, u8 key_idx,
+		       enum nl80211_key_type type,
 		       const u8 *mac_addr, struct key_params *params)
 {
 	struct brcmf_cfg80211_info *cfg = wiphy_to_cfg(wiphy);
@@ -2579,7 +2577,7 @@ brcmf_cfg80211_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 
 	if (params->key_len == 0)
 		return brcmf_cfg80211_del_key(wiphy, wdev, -1, key_idx,
-					      pairwise, mac_addr);
+					      type, mac_addr);
 
 	if (params->key_len > sizeof(key->data)) {
 		bphy_err(drvr, "Too long key length (%u)\n", params->key_len);
@@ -2710,7 +2708,8 @@ done:
 
 static s32
 brcmf_cfg80211_get_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-		       int link_id, u8 key_idx, bool pairwise,
+		       int link_id, u8 key_idx,
+		       enum nl80211_key_type type,
 		       const u8 *mac_addr, void *cookie,
 		       void (*callback)(void *cookie,
 					struct key_params *params))
@@ -4978,6 +4977,79 @@ brcmf_config_ap_mgmt_ie(struct brcmf_cfg80211_vif *vif,
 }
 
 static s32
+brcmf_parse_configure_sae_pwe(struct brcmf_if *ifp,
+			      struct cfg80211_ap_settings *settings)
+{
+	const struct brcmf_tlv *rsnx_ie;
+	const struct brcmf_tlv *ext_rate_ie;
+	const struct brcmf_tlv *supp_rate_ie;
+	u8 ie_len, i;
+	u32 wpa_auth = 0;
+	u32 sae_pwe = 0; /* 0 = Hunting-and-Pecking only, 1 = H2E only, 2 = both */
+	s32 err = 0;
+
+	if (!brcmf_feat_is_enabled(ifp, BRCMF_FEAT_SAE_EXT))
+		return 0;
+
+	err = brcmf_fil_bsscfg_int_get(ifp, "wpa_auth", &wpa_auth);
+	if (err || (wpa_auth & WPA3_AUTH_SAE_PSK) == 0) {
+		brcmf_dbg(INFO, "wpa_auth is not SAE:0x%x\n", wpa_auth);
+		return 0;
+	}
+
+	rsnx_ie = brcmf_parse_tlvs((u8 *)settings->beacon.tail,
+				   settings->beacon.tail_len, WLAN_EID_RSNX);
+
+	if (rsnx_ie && rsnx_ie->len &&
+	    (rsnx_ie->data[0] & WLAN_RSNX_CAPA_SAE_H2E))
+		sae_pwe = 2;
+
+	/* Found rsnx_ie with SAE_H2E, check the bss selector to know if it is
+	 * a H2E only.
+	 */
+
+	if (sae_pwe == 2) {
+		supp_rate_ie = brcmf_parse_tlvs((u8 *)settings->beacon.head,
+						settings->beacon.head_len,
+						WLAN_EID_SUPP_RATES);
+		ext_rate_ie = brcmf_parse_tlvs((u8 *)settings->beacon.tail,
+					       settings->beacon.tail_len,
+					       WLAN_EID_EXT_SUPP_RATES);
+		if (ext_rate_ie) {
+			ie_len = ext_rate_ie->len;
+			for (i = 0; i < ie_len; i++) {
+				if ((ext_rate_ie->data[i] & 0x7f) ==
+				    BSS_MEMBERSHIP_SELECTOR_SAE_H2E) {
+					sae_pwe = 1;
+					break;
+				}
+			}
+		}
+
+		/* If we cannot found H2E only selector in ext_supp_rate IE,
+		 * traversal supp_rate IE to make sure it really doesn't exist
+		 */
+		if (sae_pwe == 2 && supp_rate_ie) {
+			ie_len = supp_rate_ie->len;
+			for (i = 0; i < ie_len; i++) {
+				if ((supp_rate_ie->data[i] & 0x7f) ==
+				    BSS_MEMBERSHIP_SELECTOR_SAE_H2E) {
+					sae_pwe = 1;
+					break;
+				}
+			}
+		}
+	}
+
+	err = brcmf_fwvid_configure_sae_pwe(ifp, sae_pwe);
+	if (err == -EOPNOTSUPP)
+		return 0;
+
+	brcmf_dbg(TRACE, "extsae_pwe=%u\n", sae_pwe);
+	return err;
+}
+
+static s32
 brcmf_parse_configure_security(struct brcmf_if *ifp,
 			       struct cfg80211_ap_settings *settings,
 			       enum nl80211_iftype dev_role)
@@ -5008,6 +5080,10 @@ brcmf_parse_configure_security(struct brcmf_if *ifp,
 
 			/* RSN IE */
 			err = brcmf_configure_wpaie(ifp, tmp_ie, true);
+			if (err < 0)
+				return err;
+
+			err = brcmf_parse_configure_sae_pwe(ifp, settings);
 			if (err < 0)
 				return err;
 		}
@@ -5865,27 +5941,27 @@ static int brcmf_cfg80211_set_pmk(struct wiphy *wiphy, struct net_device *dev,
 	struct brcmf_if *ifp;
 	struct brcmf_pub *drvr;
 	int ret;
+
 	brcmf_dbg(TRACE, "enter\n");
 
-	/* expect using firmware supplicant for 1X */
 	ifp = netdev_priv(dev);
 	drvr = ifp->drvr;
-	if (WARN_ON((ifp->vif->profile.use_fwsup != BRCMF_PROFILE_FWSUP_1X) &&
-		    (ifp->vif->profile.use_fwsup != BRCMF_PROFILE_FWSUP_ROAM) &&
-		    (ifp->vif->profile.is_ft != true) &&
-		    (ifp->vif->profile.is_okc != true)))
+	if (WARN_ON(ifp->vif->profile.use_fwsup != BRCMF_PROFILE_FWSUP_1X &&
+		    !ifp->vif->profile.is_ft &&
+		    !ifp->vif->profile.is_okc))
 		return -EINVAL;
 
 	if (conf->pmk_len > BRCMF_WSEC_MAX_PSK_LEN)
 		return -ERANGE;
 
 	if (ifp->vif->profile.is_okc) {
-		ret = brcmf_fil_iovar_data_set(ifp, "okc_info_pmk", conf->pmk,
-					       conf->pmk_len);
+		ret = brcmf_fil_iovar_data_set(ifp, "okc_info_pmk",
+					       conf->pmk, conf->pmk_len);
 		if (ret < 0)
 			bphy_err(drvr, "okc_info_pmk iovar failed: ret=%d\n",
 				 ret);
 	}
+
 	return brcmf_set_pmk(ifp, conf->pmk, conf->pmk_len);
 }
 
@@ -6352,36 +6428,37 @@ static bool brcmf_has_pmkid(const u8 *parse, u32 len)
 	u32 offset;
 	u16 count;
 
+	if (!parse)
+		return false;
+
 	rsn_ie = brcmf_parse_tlvs(parse, len, WLAN_EID_RSN);
 	if (!rsn_ie)
-		goto done;
+		return false;
+
 	ie = (const u8 *)rsn_ie;
 	ie_len = rsn_ie->len + TLV_HDR_LEN;
-	/* Skip group data cipher suite */
+
 	offset = TLV_HDR_LEN + WPA_IE_VERSION_LEN + WPA_IE_MIN_OUI_LEN;
 	if (offset + WPA_IE_SUITE_COUNT_LEN >= ie_len)
-		goto done;
-	/* Skip pairwise cipher suite(s) */
+		return false;
+
 	count = ie[offset] + (ie[offset + 1] << 8);
-	offset += WPA_IE_SUITE_COUNT_LEN + (count * WPA_IE_MIN_OUI_LEN);
+	offset += WPA_IE_SUITE_COUNT_LEN + count * WPA_IE_MIN_OUI_LEN;
 	if (offset + WPA_IE_SUITE_COUNT_LEN >= ie_len)
-		goto done;
-	/* Skip auth key management suite(s) */
+		return false;
+
 	count = ie[offset] + (ie[offset + 1] << 8);
-	offset += WPA_IE_SUITE_COUNT_LEN + (count * WPA_IE_MIN_OUI_LEN);
+	offset += WPA_IE_SUITE_COUNT_LEN + count * WPA_IE_MIN_OUI_LEN;
 	if (offset + RSN_CAP_LEN >= ie_len)
-		goto done;
-	/* Skip rsn capabilities */
+		return false;
+
 	offset += RSN_CAP_LEN;
 	if (offset + RSN_PMKID_COUNT_LEN > ie_len)
-		goto done;
-	/* Extract PMKID count */
-	count = ie[offset] + (ie[offset + 1] << 8);
-	if (count)
-		return true;
+		return false;
 
-done:
-	return false;
+	count = ie[offset] + (ie[offset + 1] << 8);
+
+	return count > 0;
 }
 
 static s32
@@ -6398,6 +6475,7 @@ brcmf_bss_roaming_done(struct brcmf_cfg80211_info *cfg,
 	struct brcmf_bss_info_le *bi;
 	struct brcmu_chan ch;
 	struct cfg80211_roam_info roam_info = {};
+	bool authorized = false;
 	u32 freq;
 	s32 err = 0;
 	u8 *buf;
@@ -6451,17 +6529,17 @@ done:
 	roam_info.resp_ie = conn_info->resp_ie;
 	roam_info.resp_ie_len = conn_info->resp_ie_len;
 
-	cfg80211_roamed(ndev, &roam_info, GFP_KERNEL);
-	brcmf_dbg(CONN, "Report roaming result\n");
-
-	if (((profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X ||
-	    profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM) &&
+	if ((profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X ||
+	     profile->use_fwsup == BRCMF_PROFILE_FWSUP_ROAM) &&
 	    (brcmf_has_pmkid(roam_info.req_ie, roam_info.req_ie_len) ||
-	     profile->is_ft || profile->is_okc))) {
+	     profile->is_ft || profile->is_okc))
+		authorized = true;
+
+	cfg80211_roamed(ndev, &roam_info, GFP_KERNEL);
+	if (authorized)
 		cfg80211_port_authorized(ndev, profile->bssid, NULL, 0,
 					 GFP_KERNEL);
-		brcmf_dbg(CONN, "Report port authorized\n");
-	}
+	brcmf_dbg(CONN, "Report roaming result\n");
 
 	clear_bit(BRCMF_VIF_STATUS_CONNECTING, &ifp->vif->sme_state);
 	set_bit(BRCMF_VIF_STATUS_CONNECTED, &ifp->vif->sme_state);
@@ -6512,6 +6590,8 @@ brcmf_bss_connect_done(struct brcmf_cfg80211_info *cfg,
 			clear_bit(BRCMF_VIF_STATUS_ASSOC_SUCCESS,
 				  &ifp->vif->sme_state);
 			conn_params.status = WLAN_STATUS_AUTH_TIMEOUT;
+			bphy_err(ifp->drvr, "connect failed: event %u status %u reason %u\n",
+				 e->event_code, e->status, e->reason);
 		}
 		conn_params.links[0].bssid = profile->bssid;
 		conn_params.req_ie = conn_info->req_ie;
@@ -7956,6 +8036,10 @@ static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 	}
 	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_SAE_EXT))
 		wiphy->features |= NL80211_FEATURE_SAE;
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_FBT) ||
+	    brcmf_feat_is_enabled(ifp, BRCMF_FEAT_OKC))
+		wiphy_ext_feature_set(wiphy,
+				      NL80211_EXT_FEATURE_FAST_ROAM_OFFLOAD);
 
 	/* High accuracy and low power scans are always supported. */
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_HIGH_ACCURACY_SCAN);
@@ -8218,6 +8302,7 @@ static bool brmcf_use_iso3166_ccode_fallback(struct brcmf_pub *drvr)
 	switch (drvr->bus_if->chip) {
 	case BRCM_CC_43430_CHIP_ID:
 	case BRCM_CC_4345_CHIP_ID:
+	case BRCM_CC_4350_CHIP_ID:
 	case BRCM_CC_4356_CHIP_ID:
 	case BRCM_CC_43602_CHIP_ID:
 		return true;

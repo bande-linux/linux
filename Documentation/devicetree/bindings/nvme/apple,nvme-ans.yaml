@@ -18,6 +18,7 @@ properties:
               - apple,t6020-nvme-ans2
               - apple,t8122-nvme-ans2
           - const: apple,t8103-nvme-ans2
+      - const: apple,t8132-nvme-ans2
       - items:
           - enum:
               # Do not add additional SoC to this list.
