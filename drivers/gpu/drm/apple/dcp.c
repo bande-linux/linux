@@ -435,9 +435,8 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 	return 0;
 }
 
-int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
+static int dcp_dptx_connect_oob(struct apple_dcp *dcp, u32 port)
 {
-	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 	bool was_connected = dcp->dptxport[port].connected;
 	int ret;
 
@@ -448,10 +447,8 @@ int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 	return ret;
 }
 
-int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port)
+static int dcp_dptx_disconnect_oob(struct apple_dcp *dcp, u32 port)
 {
-	struct apple_dcp *dcp = platform_get_drvdata(pdev);
-
 	disconnected_hpd_event(dcp->connector);
 
 	if (dcp->avep)
@@ -461,6 +458,53 @@ int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port)
 		dptxport_set_hpd(dcp->dptxport[port].service, false);
 
 	return dcp_dptx_disconnect(dcp, port);
+}
+
+#define DCP_OOB_HPD_DISCONNECT	0
+#define DCP_OOB_HPD_CONNECT	1
+
+static void dcp_work_oob_hpd(struct work_struct *work)
+{
+	struct apple_dcp *dcp = container_of(work, struct apple_dcp, oob_hpd_wq);
+	int ret;
+
+	/* A disconnect queued before a connect is applied first */
+	if (test_and_clear_bit(DCP_OOB_HPD_DISCONNECT, &dcp->oob_hpd_events))
+		dcp_dptx_disconnect_oob(dcp, 0);
+
+	if (test_and_clear_bit(DCP_OOB_HPD_CONNECT, &dcp->oob_hpd_events)) {
+		ret = dcp_dptx_connect_oob(dcp, 0);
+		if (ret)
+			dev_warn(dcp->dev, "out-of-band connect failed: %d\n", ret);
+	}
+}
+
+/**
+ * dcp_dptx_oob_hotplug() - Out-of-band HPD from the Type-C port controller
+ * @pdev: DCP platform device
+ * @connected: new HPD state
+ *
+ * Called from the DRM connector's oob_hotplug_event hook, which must not block,
+ * so the link is set up or released from a work item. A connect after a
+ * disconnect that is not applied yet is kept as a disconnect and a connect,
+ * so the link is set up again after a PHY reconfiguration.
+ */
+void dcp_dptx_oob_hotplug(struct platform_device *pdev, bool connected)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	unsigned long flags;
+
+	if (connected) {
+		set_bit(DCP_OOB_HPD_CONNECT, &dcp->oob_hpd_events);
+	} else {
+		clear_bit(DCP_OOB_HPD_CONNECT, &dcp->oob_hpd_events);
+		set_bit(DCP_OOB_HPD_DISCONNECT, &dcp->oob_hpd_events);
+	}
+
+	spin_lock_irqsave(&dcp->oob_hpd_lock, flags);
+	if (!dcp->oob_hpd_stopped)
+		queue_work(system_freezable_wq, &dcp->oob_hpd_wq);
+	spin_unlock_irqrestore(&dcp->oob_hpd_lock, flags);
 }
 
 static irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
@@ -774,6 +818,11 @@ static void dcp_stop_hpd_work(struct apple_dcp *dcp)
 	cancel_work_sync(&dcp->hpd_resume_wq);
 	cancel_work_sync(&dcp->sink_modes_wq);
 	cancel_delayed_work_sync(&dcp->release_wq);
+
+	spin_lock_irq(&dcp->oob_hpd_lock);
+	dcp->oob_hpd_stopped = true;
+	spin_unlock_irq(&dcp->oob_hpd_lock);
+	cancel_work_sync(&dcp->oob_hpd_wq);
 }
 
 void dcp_poweron(struct platform_device *pdev)
@@ -1154,6 +1203,10 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	mutex_init(&dcp->power_mutex);
 	init_completion(&dcp->timings_done);
 	INIT_WORK(&dcp->sink_modes_wq, dcp_work_sink_modes);
+	INIT_WORK(&dcp->oob_hpd_wq, dcp_work_oob_hpd);
+	spin_lock_init(&dcp->oob_hpd_lock);
+	dcp->oob_hpd_events = 0;
+	dcp->oob_hpd_stopped = false;
 	INIT_WORK(&dcp->hpd_resume_wq, dcp_work_hpd_resume);
 	INIT_DELAYED_WORK(&dcp->release_wq, dcp_work_release_display);
 	dcp->powered = false;
@@ -1460,10 +1513,14 @@ static int dcp_platform_probe(struct platform_device *pdev)
 				dev_warn(dev, "mux_control_select failed: %d\n", ret);
 
 			/*
-			 * Switch atcphy to DP-only. should move to a Macbook Pro
+			 * Switch atcphy to DP-only. Should move to a Macbook Pro
 			 * 14-/16-inch specific DP-to-HDMI drm_bridge.
+			 *
+			 * Only a DP-to-HDMI converter is hardwired to the PHY. On
+			 * a USB-C port the Type-C port controller sets the mux.
 			 */
-			dcp->typec_mux = fwnode_typec_mux_get(dev_fwnode(dcp->dev));
+			if (dcp->hdmi_hpd)
+				dcp->typec_mux = fwnode_typec_mux_get(dev_fwnode(dcp->dev));
 			if (!IS_ERR_OR_NULL(dcp->typec_mux)) {
 				struct typec_altmode alt = {
 					.svid = USB_TYPEC_DP_SID,
@@ -1474,7 +1531,7 @@ static int dcp_platform_probe(struct platform_device *pdev)
 				};
 				int ret = typec_mux_set(dcp->typec_mux, &state);
 				dev_info(dev, "typec_mux_set() returned: %d\n", ret);
-			} else {
+			} else if (dcp->hdmi_hpd) {
 				dev_info(dev, "fwnode_typec_mux_get() returned: %ld\n",
 						IS_ERR(dcp->typec_mux) ? PTR_ERR(dcp->typec_mux) : 0);
 				dcp->typec_mux = NULL;
@@ -1532,6 +1589,9 @@ static int dcp_platform_resume(struct device *dev)
 		mutex_lock(&dcp->power_mutex);
 		dcp->stopping = false;
 		mutex_unlock(&dcp->power_mutex);
+		spin_lock_irq(&dcp->oob_hpd_lock);
+		dcp->oob_hpd_stopped = false;
+		spin_unlock_irq(&dcp->oob_hpd_lock);
 		enable_irq(dcp->hdmi_hpd_irq);
 		schedule_work(&dcp->hpd_resume_wq);
 	}

@@ -89,12 +89,12 @@ static void apple_connector_oob_hotplug(struct drm_connector *connector,
 {
 	struct apple_connector *apple_connector = to_apple_connector(connector);
 
-	printk("#### oob_hotplug status:0x%x ####\n", (u32)status);
+	dev_dbg(&apple_connector->dcp->dev, "oob hotplug status %d\n", status);
 
 	if (status == connector_status_connected)
-		dcp_dptx_connect_oob(apple_connector->dcp, 0);
+		dcp_dptx_oob_hotplug(apple_connector->dcp, true);
 	else if (status == connector_status_disconnected)
-		dcp_dptx_disconnect_oob(apple_connector->dcp, 0);
+		dcp_dptx_oob_hotplug(apple_connector->dcp, false);
 	else
 		dev_err(&apple_connector->dcp->dev, "unexpected connector status"
 			":0x%x in oob_hotplug event\n", (u32)status);
@@ -264,6 +264,30 @@ static const struct drm_crtc_helper_funcs apple_crtc_helper_funcs = {
 	.mode_fixup		= dcp_crtc_mode_fixup,
 };
 
+/*
+ * A DCP whose DisplayPort output (port 1) goes through a Type-C PHY to a
+ * USB-C connector gets its hotplug events from the Type-C port controller.
+ * That reports them with drm_connector_oob_hotplug_event() on the fwnode of
+ * the USB-C connector node, so use that node as the DRM connector's fwnode.
+ * Returns a reference to the node, or NULL.
+ */
+static struct fwnode_handle *apple_dcp_typec_connector(struct device *dev)
+{
+	struct device_node *phy __free(device_node) =
+		of_graph_get_remote_node(dev->of_node, 1, -1);
+	struct device_node *con __free(device_node) = NULL;
+
+	if (!phy)
+		return NULL;
+
+	/* Port 0 of the Type-C PHY goes to the connector's SuperSpeed port */
+	con = of_graph_get_remote_node(phy, 0, -1);
+	if (!con || !of_device_is_compatible(con, "usb-c-connector"))
+		return NULL;
+
+	return of_fwnode_handle(no_free_ptr(con));
+}
+
 static int apple_probe_per_dcp(struct device *dev,
 			       struct drm_device *drm,
 			       struct platform_device *dcp,
@@ -334,8 +358,9 @@ static int apple_probe_per_dcp(struct device *dev,
 	drm_connector_helper_add(&connector->base,
 				 &apple_connector_helper_funcs);
 
-	// HACK:
-	if (dcp_ext)
+	connector->base.fwnode = apple_dcp_typec_connector(&dcp->dev);
+	// HACK: DCPext and DCPs with a DP PHY are claimed by their own fwnode
+	if (!connector->base.fwnode && dcp_ext)
 		connector->base.fwnode = fwnode_handle_get(dcp->dev.fwnode);
 
 	ret = drm_connector_init(drm, &connector->base, &apple_connector_funcs,

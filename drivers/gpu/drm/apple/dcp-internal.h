@@ -274,6 +274,11 @@ struct apple_dcp {
 	bool client_open;
 	struct completion timings_done;
 	struct work_struct sink_modes_wq;
+	/* out-of-band HPD events, DCP_OOB_HPD_* bits, applied by oob_hpd_wq */
+	unsigned long oob_hpd_events;
+	struct work_struct oob_hpd_wq;
+	spinlock_t oob_hpd_lock; /* protects oob_hpd_stopped */
+	bool oob_hpd_stopped;
 	struct work_struct hpd_resume_wq;
 	struct delayed_work release_wq;
 
