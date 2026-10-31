@@ -231,13 +231,26 @@ static struct macaudio_link_props macaudio_fe_link_props[] = {
 	}
 };
 
+/*
+ * A speaker volume control is a volsw control whose name matches the amp
+ * pattern, as in snd_soc_limit_volume(). Other controls, such as user
+ * controls added through SNDRV_CTL_IOCTL_ELEM_ADD, never count.
+ */
+static bool macaudio_is_speaker_volume(struct macaudio_snd_data *ma,
+				       struct snd_kcontrol *kctl)
+{
+	return (kctl->info == snd_soc_info_volsw ||
+		kctl->info == snd_soc_info_volsw_sx) &&
+	       snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]);
+}
+
 static unsigned int macaudio_vlimit_count(struct macaudio_snd_data *ma)
 {
 	struct snd_kcontrol *kctl;
 	unsigned int count = 0;
 
 	list_for_each_entry(kctl, &ma->card.snd_card->controls, list)
-		if (snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
+		if (macaudio_is_speaker_volume(ma, kctl))
 			count++;
 
 	return count;
@@ -322,7 +335,7 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 	/* Check that *every* limited control is locked by the same owner */
 	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
-		if(!snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
+		if (!macaudio_is_speaker_volume(ma, kctl))
 			continue;
 
 		matches++;
