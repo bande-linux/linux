@@ -49,10 +49,7 @@ use kernel::{
         Registered, //
     },
     error::Result,
-    io::{
-        self,
-        ResourceSize, //
-    },
+    io,
     new_mutex,
     prelude::*,
     static_lock_class,
@@ -217,7 +214,7 @@ struct VmBinding {
 #[pin_data]
 struct VmBoData {
     #[pin]
-    segments: Mutex<Option<KVVec<(DmaAddress, ResourceSize)>>>,
+    segments: Mutex<Option<KVVec<(DmaAddress, u32)>>>,
 }
 
 /// Preallocated resources needed to execute a VM operation.
@@ -1032,7 +1029,7 @@ impl HandoffFlush {
 fn prefetch_sgt_segments(
     dev: &device::Device<Bound>,
     gem: &gem::Object,
-) -> Result<KVVec<(DmaAddr, ResourceSize)>> {
+) -> Result<KVVec<(DmaAddr, u32)>> {
     let sgt = gem.sg_table(dev)?;
 
     // self.segments.

@@ -40,9 +40,10 @@ pub(crate) type AsahiDrmDevice<Ctx = drm::Normal> = drm::Device<AsahiDrmDriver, 
 
 pub(crate) struct AsahiPlatformDriver;
 
-// #[pin_data(PinnedDrop)]
+#[pin_data]
 pub(crate) struct AsahiPlatformDriverData<'bound> {
     _device: ARef<AsahiDrmDevice>,
+    #[pin]
     _reg: drm::Registration<'bound, AsahiDrmDriver>,
 }
 
@@ -154,74 +155,74 @@ impl platform::Driver for AsahiPlatformDriver {
         pdev: &'bound platform::Device<Core<'_>>,
         info: Option<&'bound Self::IdInfo>,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
-        debug::update_debug_flags();
+        pin_init::pin_init_scope(move || {
+            debug::update_debug_flags();
 
-        dev_info!(pdev.as_ref(), "Probing...\n");
+            dev_info!(pdev.as_ref(), "Probing...\n");
 
-        let cfg = info.ok_or(ENODEV)?;
+            let cfg = info.ok_or(ENODEV)?;
 
-        unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
+            unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
 
-        let resources = regs::Resources::new(pdev)?;
+            let resources = regs::Resources::new(pdev)?;
 
-        // Initialize misc MMIO
-        resources.init_mmio()?;
+            // Initialize misc MMIO
+            resources.init_mmio()?;
 
-        // Start the coprocessor CPU, so UAT can initialize the handoff
-        regs::Resources::start_cpu(pdev)?;
+            // Start the coprocessor CPU, so UAT can initialize the handoff
+            regs::Resources::start_cpu(pdev)?;
 
-        let fwnode = pdev.as_ref().fwnode().ok_or(EIO)?;
-        let compat: KVec<u32> = fwnode
-            .property_read_array_vec(c"apple,firmware-compat", 3)?
-            .required_by(pdev.as_ref())?;
+            let fwnode = pdev.as_ref().fwnode().ok_or(EIO)?;
+            let compat: KVec<u32> = fwnode
+                .property_read_array_vec(c"apple,firmware-compat", 3)?
+                .required_by(pdev.as_ref())?;
 
-        let drm = drm::UnregisteredDevice::<AsahiDrmDriver>::new(pdev, Ok(()))?;
+            let drm = drm::UnregisteredDevice::<AsahiDrmDriver>::new(pdev, Ok(()))?;
 
-        let gpu = match (cfg.gpu_gen, cfg.gpu_variant, compat.as_slice()) {
-            (hw::GpuGen::G13, _, &[12, 3, 0]) => {
-                gpu::GpuManagerG13V12_3::new(&drm, resources, cfg)?
-                    as Arc<dyn gpu::GpuManager + 'bound>
-            }
-            (hw::GpuGen::G14, hw::GpuVariant::G, &[12, 4, 0]) => {
-                gpu::GpuManagerG14V12_4::new(&drm, resources, cfg)?
-                    as Arc<dyn gpu::GpuManager + 'bound>
-            }
-            (hw::GpuGen::G13, _, &[13, 5, 0]) => {
-                gpu::GpuManagerG13V13_5::new(&drm, resources, cfg)?
-                    as Arc<dyn gpu::GpuManager + 'bound>
-            }
-            (hw::GpuGen::G14, hw::GpuVariant::G, &[13, 5, 0]) => {
-                gpu::GpuManagerG14V13_5::new(&drm, resources, cfg)?
-                    as Arc<dyn gpu::GpuManager + 'bound>
-            }
-            (hw::GpuGen::G14, _, &[13, 5, 0]) => {
-                gpu::GpuManagerG14XV13_5::new(&drm, resources, cfg)?
-                    as Arc<dyn gpu::GpuManager + 'bound>
-            }
-            _ => {
-                dev_info!(
-                    pdev.as_ref(),
-                    "Unsupported GPU/firmware combination ({:?}, {:?}, {:?})\n",
-                    cfg.gpu_gen,
-                    cfg.gpu_variant,
-                    compat
-                );
-                return Err(ENODEV);
-            }
-        };
-        gpu.init()?;
+            let gpu = match (cfg.gpu_gen, cfg.gpu_variant, compat.as_slice()) {
+                (hw::GpuGen::G13, _, &[12, 3, 0]) => {
+                    gpu::GpuManagerG13V12_3::new(&drm, resources, cfg)?
+                        as Arc<dyn gpu::GpuManager + 'bound>
+                }
+                (hw::GpuGen::G14, hw::GpuVariant::G, &[12, 4, 0]) => {
+                    gpu::GpuManagerG14V12_4::new(&drm, resources, cfg)?
+                        as Arc<dyn gpu::GpuManager + 'bound>
+                }
+                (hw::GpuGen::G13, _, &[13, 5, 0]) => {
+                    gpu::GpuManagerG13V13_5::new(&drm, resources, cfg)?
+                        as Arc<dyn gpu::GpuManager + 'bound>
+                }
+                (hw::GpuGen::G14, hw::GpuVariant::G, &[13, 5, 0]) => {
+                    gpu::GpuManagerG14V13_5::new(&drm, resources, cfg)?
+                        as Arc<dyn gpu::GpuManager + 'bound>
+                }
+                (hw::GpuGen::G14, _, &[13, 5, 0]) => {
+                    gpu::GpuManagerG14XV13_5::new(&drm, resources, cfg)?
+                        as Arc<dyn gpu::GpuManager + 'bound>
+                }
+                _ => {
+                    dev_info!(
+                        pdev.as_ref(),
+                        "Unsupported GPU/firmware combination ({:?}, {:?}, {:?})\n",
+                        cfg.gpu_gen,
+                        cfg.gpu_variant,
+                        compat
+                    );
+                    return Err(ENODEV);
+                }
+            };
+            gpu.init()?;
 
-        let data = try_pin_init!(AsahiDrmRegistrationData { gpu });
+            let data = try_pin_init!(AsahiDrmRegistrationData { gpu });
 
-        // SAFETY: `reg` is stored in `AsahiPlatformDriverData` and dropped when the driver is
-        // unbound; it is never forgotten.
-        let reg = unsafe { drm::Registration::new(pdev.as_ref(), drm, data, 0)? };
+            let device: ARef<AsahiDrmDevice> = (&*drm).into();
 
-        let driver = AsahiPlatformDriverData {
-            _device: reg.device().into(),
-            _reg: reg,
-        };
-
-        Ok(driver)
+            Ok(try_pin_init!(AsahiPlatformDriverData {
+                _device: device,
+                // SAFETY: `_reg` is stored in `AsahiPlatformDriverData` and dropped when the driver
+                // is unbound; it is never forgotten.
+                _reg <- unsafe { drm::Registration::new(pdev.as_ref(), drm, data) },
+            }))
+        })
     }
 }
