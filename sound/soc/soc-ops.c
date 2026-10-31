@@ -479,8 +479,8 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
  * verbatim, or a pattern starting with the wildcard '*') and sets
  * a platform volume limit on them.
  *
- * Return number of matching controls on success, else error. At least
- * one control needs to match the pattern.
+ * Return 0 on success, else error. At least one control needs to match
+ * the pattern.
  */
 int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 {
@@ -509,7 +509,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		return -EINVAL;
 	}
 
-	return hits;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_soc_limit_volume);
 
