@@ -193,11 +193,11 @@ dptxport_call_get_drive_settings(struct apple_epic_service *service,
 	 * retcode appears to be lane count, seeing 2 for USB-C dp alt mode
 	 * with lanes splitted for DP/USB3.
 	 */
-	if (!dptx->lane_count)
+	if (!dptx->lane_count_set)
 		dptx->lane_count = le32_to_cpu(reply->retcode);
 	else if (le32_to_cpu(reply->retcode) != dptx->lane_count)
 		dev_err(service->ep->dcp->dev,
-			"get_drive_settings: lane count %u, active %u\n",
+			"get_drive_settings: DCP lane count %u, driver %u\n",
 			le32_to_cpu(reply->retcode), dptx->lane_count);
 
 	reply->retcode = cpu_to_le32(dptx->lane_count);
@@ -328,6 +328,7 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 		dptx->phy_ops.dp.set_lanes = 0;
 	}
 	dptx->lane_count = lane_count;
+	dptx->lane_count_set = true;
 
 	reply->retcode = cpu_to_le32(retcode);
 	reply->lane_count = cpu_to_le64(lane_count);
@@ -552,6 +553,12 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
         case DPTX_APCALL_ACTIVATE:
 		return dptxport_call_activate(service, data, data_size,
 					      reply, reply_size);
+	case DPTX_APCALL_DEVICE_NOT_RESPONDING:
+		dptx->not_responding = true;
+		memcpy(reply, data, min(reply_size, data_size));
+		if (reply_size >= 4)
+			memset(reply, 0, 4);
+		return 0;
 	case DPTX_APCALL_DEACTIVATE:
 		return dptxport_call_deactivate(service, data, data_size,
 						reply, reply_size);
@@ -573,9 +580,10 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 			  const char *class, s64 unit)
 {
 
-	if (strcmp(name, "dcpdptx-port-epic"))
+	/* name and class are NULL if the service has no init properties */
+	if (!name || strcmp(name, "dcpdptx-port-epic"))
 		return;
-	if (strcmp(class, "AppleDCPDPTXRemotePort"))
+	if (!class || strcmp(class, "AppleDCPDPTXRemotePort"))
 		return;
 
 	trace_dptxport_init(service->ep->dcp, unit);

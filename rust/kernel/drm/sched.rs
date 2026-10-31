@@ -267,7 +267,7 @@ impl<T: JobImpl> Entity<T> {
         let mut sched_ptr = &sched.0.sched as *const _ as *mut _;
 
         // SAFETY: The Box is allocated above and valid.
-        unsafe {
+        to_result(unsafe {
             bindings::drm_sched_entity_init(
                 addr_of_mut!((*entity.as_mut_ptr()).entity),
                 priority as _,
@@ -275,7 +275,7 @@ impl<T: JobImpl> Entity<T> {
                 1,
                 addr_of_mut!((*entity.as_mut_ptr()).guilty),
             )
-        };
+        })?;
 
         // SAFETY: The Box is allocated above and valid.
         unsafe { addr_of_mut!((*entity.as_mut_ptr()).sched).write(sched.0.clone()) };

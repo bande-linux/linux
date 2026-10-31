@@ -36,9 +36,12 @@ use kernel::{
 };
 
 /// Trait representing a single item within a slot.
-pub(crate) trait SlotItem {
+///
+/// Items and allocator data live inside a `Mutex` and are mutated through its guard, so they
+/// must be `Unpin`.
+pub(crate) trait SlotItem: Unpin {
     /// Arbitrary user data associated with the SlotAllocator.
-    type Data;
+    type Data: Unpin;
 
     /// Called eagerly when this item is released back into the available pool.
     fn release(&mut self, _data: &mut Self::Data, _slot: u32) {}

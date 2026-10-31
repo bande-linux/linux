@@ -244,6 +244,7 @@ struct apple_dart {
 
 	u32 save_tcr[DART_MAX_STREAMS];
 	u32 save_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
+	u32 save_remap[DART_MAX_STREAMS / 4];
 
 	u64 *locked_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
 };
@@ -433,6 +434,10 @@ apple_dart_hw_map_locked_ttbr(struct apple_dart_stream_map *stream_map, u8 idx)
 		phys_addr_t phys;
 		u64 *l1_tbl;
 
+		/* already mapped by an earlier attach of this stream */
+		if (dart->locked_ttbr[sid][idx])
+			continue;
+
 		ttbr = readl(dart->regs + DART_TTBR(dart, sid, idx));
 
 		if (!(ttbr & dart->hw->ttbr_valid)) {
@@ -449,8 +454,8 @@ apple_dart_hw_map_locked_ttbr(struct apple_dart_stream_map *stream_map, u8 idx)
 
 		l1_tbl = devm_memremap(dart->dev, phys, dart->pgsize,
 				       MEMREMAP_WB);
-		if (!l1_tbl)
-			return -ENOMEM;
+		if (IS_ERR(l1_tbl))
+			return PTR_ERR(l1_tbl);
 
 		dart->locked_ttbr[sid][idx] = l1_tbl;
 	}
@@ -553,8 +558,6 @@ apple_dart_t8110_hw_tlb_command(struct apple_dart_stream_map *stream_map,
 
 		if (ret)
 			break;
-		/* Since remap is used only the first sid needs to be invalidated. */
-		break;
 	}
 
 	spin_unlock_irqrestore(&dart->lock, flags);
@@ -1560,7 +1563,7 @@ err_sysfs_remove:
 err_free_irq:
 	free_irq(dart->irq, dart);
 err_clk_disable:
-	pm_runtime_put(dev);
+	pm_runtime_put_noidle(dev);
 	clk_bulk_disable_unprepare(dart->num_clks, dart->clks);
 
 	return ret;
@@ -1705,6 +1708,11 @@ static __maybe_unused int apple_dart_suspend(struct device *dev)
 				readl(dart->regs + DART_TTBR(dart, sid, idx));
 	}
 
+	/* T8020-style DARTs keep the stream remap table outside the TCRs. */
+	if (dart->hw->type != DART_T8110)
+		for (sid = 0; sid < dart->num_streams; sid += 4)
+			dart->save_remap[sid / 4] = readl(DART_REMAP(dart, sid));
+
 	return 0;
 }
 
@@ -1723,6 +1731,10 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 		dev_err(dev, "Failed to reset DART on resume\n");
 		return ret;
 	}
+
+	if (dart->hw->type != DART_T8110)
+		for (sid = 0; sid < dart->num_streams; sid += 4)
+			writel(dart->save_remap[sid / 4], DART_REMAP(dart, sid));
 
 	for (sid = 0; sid < dart->num_streams; sid++) {
 		for (idx = 0; idx < dart->hw->ttbr_count; idx++)

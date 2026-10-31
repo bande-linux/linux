@@ -171,10 +171,10 @@ static char *parse_string(struct dcp_parse_ctx *handle)
 	if (IS_ERR(in))
 		return (void *)in;
 
-	out = kmalloc(tag->size + 1, GFP_KERNEL);
+	out = kmemdup_nul(in, tag->size, GFP_KERNEL);
+	if (!out)
+		return ERR_PTR(-ENOMEM);
 
-	memcpy(out, in, tag->size);
-	out[tag->size] = '\0';
 	return out;
 }
 
@@ -455,6 +455,11 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	bool is_preferred = false;
 	struct drm_display_mode *mode = &out->mode;
 
+	/* The mode slot may be uninitialized or reused from a failed mode */
+	out->vrr = false;
+	out->min_vrr = 0;
+	out->max_vrr = 0;
+
 	dcp_parse_foreach_in_dict(handle, it) {
 		char *key = parse_string(it.handle);
 
@@ -582,6 +587,7 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 	struct dcp_display_mode *mode, *modes;
 	struct dcp_display_mode *best_mode = NULL;
 	s64 score, best_score = -1;
+	unsigned int nr_modes = 0;
 
 	ret = iterator_begin(handle, &it, false);
 
@@ -589,14 +595,14 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 		return ERR_PTR(ret);
 
 	/* Start with a worst case allocation */
-	modes = kmalloc_array(it.len, sizeof(*modes), GFP_KERNEL);
-	*count = 0;
+	modes = kcalloc(it.len, sizeof(*modes), GFP_KERNEL);
 
 	if (!modes)
 		return ERR_PTR(-ENOMEM);
 
 	for (; it.idx < it.len; ++it.idx) {
-		mode = &modes[*count];
+		mode = &modes[nr_modes];
+		score = -1;
 		ret = parse_mode(it.handle, mode, &score, width_mm, height_mm, notch_height);
 
 		/* Errors for a single mode are recoverable -- just skip it. */
@@ -604,7 +610,7 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 			continue;
 
 		/* Process a successful mode */
-		(*count)++;
+		nr_modes++;
 
 		if (score > best_score) {
 			best_score = score;
@@ -615,6 +621,7 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 	if (best_mode != NULL)
 		best_mode->mode.type |= DRM_MODE_TYPE_PREFERRED;
 
+	*count = nr_modes;
 	return modes;
 }
 

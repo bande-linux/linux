@@ -481,8 +481,8 @@ impl<T: IntoGEMObject> Drop for DmaBuf<T> {
         // SAFETY:
         // - `dma_buf::DmaBuf` is guaranteed to have an identical layout to `struct dma_buf`
         //   by its type invariants.
-        // - We hold the last reference to this `DmaBuf`, making it safe to destroy.
-        unsafe { bindings::drm_gem_dmabuf_release(self.0.cast().as_ptr()) }
+        // - We own the file reference `drm_gem_prime_export()` returned.
+        unsafe { bindings::dma_buf_put(self.0.cast().as_ptr()) }
     }
 }
 

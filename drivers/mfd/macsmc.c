@@ -43,6 +43,7 @@
 #define SMC_RESULT			SMC_MSG
 
 #define SMC_TIMEOUT_MS		500
+#define SMC_ATOMIC_POLL_US	100
 
 static const struct mfd_cell apple_smc_devs[] = {
 	MFD_CELL_NAME("macsmc-input"),
@@ -246,6 +247,7 @@ EXPORT_SYMBOL(apple_smc_enter_atomic);
 int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, size_t size)
 {
 	guard(spinlock_irqsave)(&smc->lock);
+	unsigned int polls = SMC_TIMEOUT_MS * 1000 / SMC_ATOMIC_POLL_US;
 	u8 result;
 	int ret;
 	u64 msg;
@@ -268,17 +270,30 @@ int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, 
 
 	ret = apple_rtkit_send_message(smc->rtk, SMC_ENDPOINT, msg, NULL, true);
 	if (ret < 0) {
+		smc->atomic_pending = false;
 		dev_err(smc->dev, "Failed to send command (%d)\n", ret);
 		return ret;
 	}
 
+	/*
+	 * This runs with interrupts disabled, typically as the last step of a
+	 * restart or power off after the other CPUs have been stopped. Do not
+	 * spin forever if the SMC never answers: give the caller a chance to
+	 * fall back to another handler (e.g. the watchdog for restart).
+	 */
 	while (smc->atomic_pending) {
 		ret = apple_rtkit_poll(smc->rtk);
 		if (ret < 0) {
+			smc->atomic_pending = false;
 			dev_err(smc->dev, "RTKit poll failed (%llx)", msg);
 			return ret;
 		}
-		udelay(100);
+		if (smc->atomic_pending && !polls--) {
+			smc->atomic_pending = false;
+			dev_err(smc->dev, "Atomic command timed out (%llx)\n", msg);
+			return -ETIMEDOUT;
+		}
+		udelay(SMC_ATOMIC_POLL_US);
 	}
 
 	if (FIELD_GET(SMC_ID, smc->cmd_ret) != smc->msg_id) {

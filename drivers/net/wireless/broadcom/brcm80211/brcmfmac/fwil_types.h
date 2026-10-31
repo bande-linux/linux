@@ -1365,7 +1365,7 @@ struct brcmf_pno_net_info_le {
  */
 struct brcmf_pno_net_info_v3_le {
 	u8 bssid[6];
-	u16 chanspec;
+	__le16 chanspec;
 	u8 SSID_len;
 	u8 padding;
 	u16 flags;

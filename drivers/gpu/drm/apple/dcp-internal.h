@@ -183,7 +183,12 @@ struct apple_dcp {
 	ktime_t swap_start;
 
 	/* Current display mode */
+	spinlock_t hotplug_lock;
 	bool during_modeset;
+	bool hotplug_deferred;
+	bool hotplug_deferred_connected;
+	u32 publish_seq;
+	u32 connect_seq;
 	bool valid_mode;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
@@ -204,6 +209,7 @@ struct apple_dcp {
 	bool crc_enabled;
 
 	/* Modes valid for the connected display */
+	struct mutex modes_lock;
 	struct dcp_display_mode *modes;
 	unsigned int nr_modes;
 
@@ -263,8 +269,13 @@ struct apple_dcp {
 
 	struct mutex power_mutex;
 	bool powered;
+	bool stopping;
+	bool iomfb_on;
 	bool client_open;
 	struct completion timings_done;
+	struct work_struct sink_modes_wq;
+	struct work_struct hpd_resume_wq;
+	struct delayed_work release_wq;
 
 	u32 dptx_phy;
 	u32 dptx_die;

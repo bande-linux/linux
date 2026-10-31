@@ -14,7 +14,7 @@ fn expect_punct(it: &mut impl Iterator<Item = TokenTree>) -> String {
     if let Some(TokenTree::Punct(punct)) = it.next() {
         punct.to_string()
     } else {
-        panic!("Expected Group")
+        panic!("Expected Punct")
     }
 }
 
@@ -104,13 +104,14 @@ static AGX_VERSIONS: VersionConfig = VersionConfig {
     ],
 };
 
-fn check_version(
+/// Evaluates one comparison (`G >= G14`) or one parenthesized expression.
+fn check_term(
     config: &VersionConfig,
     ver: &[usize],
     it: &mut impl Iterator<Item = TokenTree>,
 ) -> bool {
     let first = it.next().unwrap();
-    let val: bool = match &first {
+    match &first {
         TokenTree::Group(group) => check_version(config, ver, &mut group.stream().into_iter()),
         TokenTree::Ident(ident) => {
             let key = config
@@ -127,7 +128,7 @@ fn check_version(
             let rhs_name = if let TokenTree::Ident(ident) = &rhs_token {
                 ident.to_string()
             } else {
-                panic!("Unexpected token {}", ident)
+                panic!("Unexpected token {}", rhs_token)
             };
 
             let rhs = config.enums[key]
@@ -149,23 +150,41 @@ fn check_version(
         _ => {
             panic!("Unknown token {}", first)
         }
-    };
+    }
+}
 
-    let boolop = it.next();
-    match boolop {
-        Some(TokenTree::Punct(punct)) => {
-            let right = expect_punct(it);
-            if right != punct.to_string() {
-                panic!("Unexpected op {}{}", punct, right);
+/// Evaluates a `&&`/`||` expression of terms, with `&&` binding tighter than `||` as in Rust.
+fn check_version(
+    config: &VersionConfig,
+    ver: &[usize],
+    it: &mut impl Iterator<Item = TokenTree>,
+) -> bool {
+    // `any` holds the `||` of the finished `&&` chains, `all` the chain being built.
+    let mut any = false;
+    let mut all = check_term(config, ver, it);
+
+    loop {
+        match it.next() {
+            Some(TokenTree::Punct(punct)) => {
+                let right = expect_punct(it);
+                if right != punct.to_string() {
+                    panic!("Unexpected op {}{}", punct, right);
+                }
+                match punct.as_char() {
+                    '&' => {
+                        let term = check_term(config, ver, it);
+                        all = all && term;
+                    }
+                    '|' => {
+                        any = any || all;
+                        all = check_term(config, ver, it);
+                    }
+                    _ => panic!("Unexpected op {}{}", punct, right),
+                }
             }
-            match punct.as_char() {
-                '&' => val && check_version(config, ver, it),
-                '|' => val || check_version(config, ver, it),
-                _ => panic!("Unexpected op {}{}", right, right),
-            }
+            Some(a) => panic!("Unexpected op {}", a),
+            None => return any || all,
         }
-        Some(a) => panic!("Unexpected op {}", a),
-        None => val,
     }
 }
 

@@ -750,6 +750,11 @@ impl KernelMapping {
         //          - lock handoff dekker
         //              change TTB
 
+        let dev = owner.dev.clone();
+        let Some(guard) = dev.registration_guard() else {
+            return;
+        };
+
         // Lock this flush slot, and write the range to it
         let flush = self.0.uat_inner.lock_flush(flush_slot);
         let pages = self.size() >> UAT_PGBIT;
@@ -769,9 +774,6 @@ impl KernelMapping {
             page_count: pages as u16,
             unk_12: 2, // ?
         };
-
-        let dev = owner.dev.clone();
-        let guard = dev.registration_guard().expect("Device is not registered!");
 
         // Tell the firmware to do a cache flush
         guard.registration_data_with(|reg_data| {
@@ -1372,13 +1374,13 @@ impl Vm {
         iova: u64,
         size: u64,
     ) -> Result {
-        // Unmapping a range can only do a single split, so just preallocate
-        // two GPUVAs.
+        // Unmapping a range can remap the mappings at both of its ends, and each
+        // remap takes two GPUVAs before handing back the unused one.
         let mut resources = VmOpResources {
             preallocated_gpuvas: [
                 Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
                 Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
-                None,
+                Some(GpuVaAlloc::<VmInner>::new(GFP_KERNEL)?),
             ],
         };
         let mut ctx = StepContext::new(dev, Prot::default(), false, &mut resources)?;

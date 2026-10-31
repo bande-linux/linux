@@ -8,11 +8,13 @@
  */
 
 #include <linux/device.h>
+#include <linux/devm-helpers.h>
 #include <linux/input.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
 #include <linux/reboot.h>
+#include <linux/workqueue.h>
 
 /**
  * struct macsmc_input
@@ -20,6 +22,7 @@
  * @smc: Pointer to apple_smc struct of the mfd parent
  * @input: Allocated input_dev; devres managed
  * @nb: Notifier block used for incoming events from SMC (e.g. button pressed down)
+ * @poweroff_work: Emergency power off, run outside the SMC event worker
  * @wakeup_mode: Set to true when system is suspended and power button events should wake it
  */
 struct macsmc_input {
@@ -27,6 +30,7 @@ struct macsmc_input {
 	struct apple_smc *smc;
 	struct input_dev *input;
 	struct notifier_block nb;
+	struct work_struct poweroff_work;
 	bool wakeup_mode;
 };
 
@@ -38,6 +42,19 @@ struct macsmc_input {
 #define BTN_POWER_HELD_SHORT	0xfe /* power button briefly held down */
 #define BTN_POWER_HELD_LONG	0x00 /* power button held down; sent just before forced poweroff */
 
+static void macsmc_input_poweroff_work(struct work_struct *work)
+{
+	/* The kernel is already shutting down (reboot(2)): let it finish */
+	if (system_state == SYSTEM_HALT || system_state == SYSTEM_POWER_OFF ||
+	    system_state == SYSTEM_RESTART)
+		return;
+
+	if (kernel_can_power_off())
+		kernel_power_off();
+	else /* Missing macsmc-reboot driver? */
+		kernel_restart("SMC power button triggered restart");
+}
+
 static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long event)
 {
 	u8 button = (event >> 8) & 0xff;
@@ -48,10 +65,12 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 	case BTN_TOUCHID:
 		pm_wakeup_dev_event(smcin->dev, 0, (smcin->wakeup_mode && state));
 		/*
-		 * Suppress KEY_POWER reports when suspended to avoid powering down
-		 * immediately after waking from s2idle.
-		 * */
-		if (smcin->wakeup_mode)
+		 * Suppress KEY_POWER presses when suspended to avoid powering down
+		 * immediately after waking from s2idle. Releases are still reported
+		 * so a key pressed before suspend cannot be left stuck down; the
+		 * input core drops releases of keys that are not pressed.
+		 */
+		if (smcin->wakeup_mode && state)
 			return;
 
 		input_report_key(smcin->input, KEY_POWER, state);
@@ -65,17 +84,19 @@ static void macsmc_input_event_button(struct macsmc_input *smcin, unsigned long 
 		 * we have about 4 seconds before forced power-off is triggered by SMC.
 		 * Try to do an emergency shutdown to make sure the NVMe cache is
 		 * flushed. macOS actually does this by panicing (!)...
+		 *
+		 * This runs in the SMC's RTKit receive worker, which must keep
+		 * running while devices shut down, so power off from a work item
+		 * of our own.
 		 */
 		if (state) {
 			dev_crit(smcin->dev, "Triggering forced shutdown!\n");
-			if (kernel_can_power_off())
-				kernel_power_off();
-			else /* Missing macsmc-reboot driver? */
-				kernel_restart("SMC power button triggered restart");
+			queue_work(system_unbound_wq, &smcin->poweroff_work);
 		}
 		break;
 	default:
-		dev_warn(smcin->dev, "Unknown SMC button event: %04lx\n", event & 0xffff);
+		dev_warn_ratelimited(smcin->dev, "Unknown SMC button event: %04lx\n",
+				     event & 0xffff);
 	}
 }
 
@@ -106,6 +127,13 @@ static int macsmc_input_event(struct notifier_block *nb, unsigned long event, vo
 	}
 }
 
+static void macsmc_input_unregister_notifier(void *data)
+{
+	struct macsmc_input *smcin = data;
+
+	blocking_notifier_chain_unregister(&smcin->smc->event_handlers, &smcin->nb);
+}
+
 static int macsmc_input_probe(struct platform_device *pdev)
 {
 	struct apple_smc *smc = dev_get_drvdata(pdev->dev.parent);
@@ -127,6 +155,11 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	smcin->smc = smc;
 	platform_set_drvdata(pdev, smcin);
 
+	error = devm_work_autocancel(&pdev->dev, &smcin->poweroff_work,
+				     macsmc_input_poweroff_work);
+	if (error)
+		return error;
+
 	smcin->input = devm_input_allocate_device(&pdev->dev);
 	if (!smcin->input)
 		return -ENOMEM;
@@ -134,24 +167,21 @@ static int macsmc_input_probe(struct platform_device *pdev)
 	smcin->input->phys = "macsmc-input (0)";
 	smcin->input->name = "Apple SMC power/lid events";
 
-	if (have_lid)
-		input_set_capability(smcin->input, EV_SW, SW_LID);
-	if (have_power)
-		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
-
 	if (have_lid) {
 		u8 val;
 
+		input_set_capability(smcin->input, EV_SW, SW_LID);
 		error = apple_smc_read_u8(smc, SMC_KEY(MSLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial lid state\n");
 		else
-			input_report_switch(smcin->input, SW_LID, val);
+			input_report_switch(smcin->input, SW_LID, !!val);
 	}
 
 	if (have_power) {
 		u32 val;
 
+		input_set_capability(smcin->input, EV_KEY, KEY_POWER);
 		error = apple_smc_read_u32(smc, SMC_KEY(bHLD), &val);
 		if (error < 0)
 			dev_warn(&pdev->dev, "Failed to read initial power button state\n");
@@ -169,8 +199,13 @@ static int macsmc_input_probe(struct platform_device *pdev)
 
 	smcin->nb.notifier_call = macsmc_input_event;
 	blocking_notifier_chain_register(&smc->event_handlers, &smcin->nb);
+	error = devm_add_action_or_reset(&pdev->dev, macsmc_input_unregister_notifier, smcin);
+	if (error)
+		return error;
 
-	device_init_wakeup(&pdev->dev, true);
+	error = devm_device_init_wakeup(&pdev->dev);
+	if (error)
+		return dev_err_probe(&pdev->dev, error, "Failed to init wakeup\n");
 
 	return 0;
 }

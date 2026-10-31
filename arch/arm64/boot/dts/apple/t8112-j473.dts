@@ -31,10 +31,6 @@
 	status = "okay";
 };
 
-&framebuffer0 {
-	power-domains = <&ps_dispext_cpu0>, <&ps_dptx_ext_phy>;
-};
-
 &dptxphy {
 	status = "okay";
 };

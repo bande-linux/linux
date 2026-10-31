@@ -403,15 +403,19 @@ static int apple_drm_init_dcp(struct device *dev)
 
 	for_each_matching_node(np, apple_dcp_id_tbl) {
 		bool dcp_ext;
-		if (!of_device_is_available(np)) {
-			of_node_put(np);
+
+		/* for_each_matching_node() drops the reference to np itself */
+		if (!of_device_is_available(np))
+			continue;
+		if (num_dcp >= MAX_COPROCESSORS) {
+			dev_warn(dev, "ignoring DCP %pOF, only %d supported\n",
+				 np, MAX_COPROCESSORS);
 			continue;
 		}
 		dcp_ext = of_device_is_compatible(np, "apple,dcpext") ||
 		          of_property_present(np, "phys");
 
 		dcp[num_dcp] = of_find_device_by_node(np);
-		of_node_put(np);
 		if (!dcp[num_dcp])
 			continue;
 
@@ -600,7 +604,6 @@ static int add_dcp_components(struct device *dev,
 				of_node_put(port);
 			}
 		}
-		of_node_put(np);
 	}
 
 	return num;

@@ -2474,14 +2474,12 @@ static int dwc3_probe(struct platform_device *pdev)
 	return dwc3_core_probe(&probe_data);
 }
 
-void dwc3_core_remove(struct dwc3 *dwc)
+static void __dwc3_core_remove(struct dwc3 *dwc, bool exit_core)
 {
-	pm_runtime_get_sync(dwc->dev);
-
-	dwc3_core_exit_mode(dwc);
 	dwc3_debugfs_exit(dwc);
 
-	dwc3_core_exit(dwc);
+	if (exit_core)
+		dwc3_core_exit(dwc);
 	dwc3_ulpi_exit(dwc);
 
 	pm_runtime_allow(dwc->dev);
@@ -2505,7 +2503,23 @@ void dwc3_core_remove(struct dwc3 *dwc)
 		power_supply_put(dwc->usb_psy);
 	}
 }
+
+void dwc3_core_remove(struct dwc3 *dwc)
+{
+	pm_runtime_get_sync(dwc->dev);
+
+	dwc3_core_exit_mode(dwc);
+	__dwc3_core_remove(dwc, true);
+}
 EXPORT_SYMBOL_GPL(dwc3_core_remove);
+
+void dwc3_core_release(struct dwc3 *dwc)
+{
+	pm_runtime_get_sync(dwc->dev);
+
+	__dwc3_core_remove(dwc, false);
+}
+EXPORT_SYMBOL_GPL(dwc3_core_release);
 
 static void dwc3_remove(struct platform_device *pdev)
 {

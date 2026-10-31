@@ -4,16 +4,14 @@
  * Copyright (C) The Asahi Linux Contributors
  */
 
-#include <linux/acpi.h>
 #include <linux/bitfield.h>
 #include <linux/firmware.h>
 #include <linux/pci.h>
 #include <linux/iopoll.h>
-#include <linux/slab.h>
+#include <linux/sizes.h>
 #include <linux/unaligned.h>
 
 #include "xhci.h"
-#include "xhci-trace.h"
 #include "xhci-pci.h"
 
 /* Configuration space registers */
@@ -80,7 +78,7 @@ static int asmedia_mbox_tx(struct pci_dev *pdev, u64 data)
 		return ret;
 	}
 	if (err)
-		return err;
+		return pcibios_err_to_errno(err);
 
 	pci_write_config_dword(pdev, ASMT_CFG_DATA_WRITE0, data);
 	pci_write_config_dword(pdev, ASMT_CFG_DATA_WRITE1, data >> 32);
@@ -104,7 +102,7 @@ static int asmedia_mbox_rx(struct pci_dev *pdev, u64 *data)
 		return ret;
 	}
 	if (err)
-		return err;
+		return pcibios_err_to_errno(err);
 
 	pci_read_config_dword(pdev, ASMT_CFG_DATA_READ0, &low);
 	pci_read_config_dword(pdev, ASMT_CFG_DATA_READ1, &high);
@@ -141,7 +139,8 @@ static int asmedia_get_fw_version(struct pci_dev *pdev, u64 *version)
 	return 0;
 }
 
-static bool asmedia_check_firmware(struct pci_dev *pdev)
+/* Returns 1 if RAM firmware is running, 0 if only the ROM, or -errno */
+static int asmedia_check_firmware(struct pci_dev *pdev)
 {
 	u64 fwver;
 	int ret;
@@ -189,7 +188,8 @@ static int asmedia_wait_reset(struct pci_dev *pdev)
 	return ret;
 }
 
-static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val) {
+static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val)
+{
 	void __iomem *regs = hcd->regs;
 	u8 status;
 	int ret;
@@ -220,7 +220,8 @@ static int asmedia_read_reg(struct usb_hcd *hcd, u16 addr, u8 *val) {
 	return 0;
 }
 
-static int asmedia_write_reg(struct usb_hcd *hcd, u16 addr, u8 data, bool wait) {
+static int asmedia_write_reg(struct usb_hcd *hcd, u16 addr, u8 data, bool wait)
+{
 	void __iomem *regs = hcd->regs;
 	u8 status, val;
 	int ret, err;
@@ -276,7 +277,7 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 {
 	struct usb_hcd *hcd;
 	void __iomem *regs;
-	const u16 *fw_data = (const u16 *)fw->data;
+	const u8 *fw_data = fw->data;
 	u16 raddr;
 	u32 data;
 	size_t index = 0, addr = 0;
@@ -285,6 +286,12 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 
 	hcd = dev_get_drvdata(&pdev->dev);
 	regs = hcd->regs;
+
+	/* The upload is in whole words and the SRAM address register is 16 bits */
+	if (!fw->size || fw->size % 2 || fw->size > SZ_128K) {
+		dev_err(&pdev->dev, "Invalid firmware size %zu\n", fw->size);
+		return -EINVAL;
+	}
 
 	ret = asmedia_write_reg(hcd, ASMT_MMIO_CPU_MODE_NEXT,
 				ASMT_MMIO_CPU_MODE_HALFSPEED, false);
@@ -318,9 +325,9 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 	/* The firmware upload is interleaved in 0x4000 word blocks */
 	addr = index = 0;
 	while (index < words) {
-		data = fw_data[index];
+		data = get_unaligned_le16(&fw_data[index * 2]);
 		if ((index | 0x4000) < words)
-			data |= fw_data[index | 0x4000] << 16;
+			data |= (u32)get_unaligned_le16(&fw_data[(index | 0x4000) * 2]) << 16;
 
 		pci_write_config_word(pdev, ASMT_CFG_SRAM_ADDR,
 				      addr);
@@ -336,7 +343,7 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 			return ret;
 		}
 		if (err)
-			return err;
+			return pcibios_err_to_errno(err);
 
 		if (++index & 0x4000)
 			index += 0x4000;
@@ -371,8 +378,8 @@ static int asmedia_load_fw(struct pci_dev *pdev, const struct firmware *fw)
 int asmedia_xhci_check_request_fw(struct pci_dev *pdev,
 				  const struct pci_device_id *id)
 {
-	struct xhci_driver_data *driver_data =
-		(struct xhci_driver_data *)id->driver_data;
+	const struct xhci_driver_data *driver_data =
+		(const struct xhci_driver_data *)id->driver_data;
 	const char *fw_name = driver_data->firmware;
 	const struct firmware *fw;
 	int ret;
@@ -384,9 +391,7 @@ int asmedia_xhci_check_request_fw(struct pci_dev *pdev,
 	else if (ret == 1)
 		return 0;
 
-	pci_dev_get(pdev);
 	ret = request_firmware(&fw, fw_name, &pdev->dev);
-	pci_dev_put(pdev);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not load firmware %s: %d\n",
 			fw_name, ret);

@@ -7,6 +7,7 @@
 %{
 #include <stdio.h>
 #include <inttypes.h>
+#include <float.h>
 
 #include "dtc.h"
 #include "srcpos.h"
@@ -403,9 +404,16 @@ arrayprefix:
 			if ($1.bits < 32) {
 				ERROR(&@2, "Floating-point values must be"
 				      " 32-bit or 64-bit");
+				$$.data = $1.data;
+			} else if ($1.bits == 32 &&
+				   ($2 > FLT_MAX || $2 < -FLT_MAX)) {
+				ERROR(&@2, "Floating-point value out of"
+				      " range for 32-bit");
+				$$.data = $1.data;
+			} else {
+				$$.data = data_append_float($1.data, $2,
+							    $1.bits);
 			}
-
-			$$.data = data_append_float($1.data, $2, $1.bits);
 		}
 	| arrayprefix integer_prim
 		{

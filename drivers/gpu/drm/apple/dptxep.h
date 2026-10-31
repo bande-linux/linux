@@ -57,6 +57,8 @@ struct dptx_port {
 	struct mux_control *mux;
 	u32 max_lane_count;
 	u32 lane_count;
+	bool lane_count_set;
+	bool not_responding;
 	u32 link_rate, pending_link_rate;
 	u32 drive_settings[2];
 };

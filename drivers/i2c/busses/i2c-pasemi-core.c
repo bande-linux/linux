@@ -244,6 +244,16 @@ static int pasemi_i2c_xfer(struct i2c_adapter *adapter,
 	struct pasemi_smbus *smbus = adapter->algo_data;
 	int ret, i;
 
+	/*
+	 * A read without STOP leaves the transaction open for further reads
+	 * (see the SMBus block read sequence below): the controller neither
+	 * ends the transfer nor signals XEN, so a repeated START can't follow
+	 * it and the bus is left stuck. Only allow a read as the last message.
+	 */
+	for (i = 0; i < num - 1; i++)
+		if (msgs[i].flags & I2C_M_RD)
+			return -EOPNOTSUPP;
+
 	ret = pasemi_smb_clear(smbus);
 	if (ret)
 		return ret;
@@ -414,6 +424,11 @@ static u32 pasemi_smb_func(struct i2c_adapter *adapter)
 	       I2C_FUNC_SMBUS_BLOCK_PROC_CALL | I2C_FUNC_I2C;
 }
 
+/* pasemi_i2c_xfer_msg() needs at least one byte to attach START/STOP to */
+static const struct i2c_adapter_quirks pasemi_i2c_quirks = {
+	.flags = I2C_AQ_NO_ZERO_LEN,
+};
+
 static const struct i2c_algorithm smbus_algorithm = {
 	.xfer = pasemi_i2c_xfer,
 	.smbus_xfer = pasemi_smb_xfer,
@@ -428,6 +443,7 @@ int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 	snprintf(smbus->adapter.name, sizeof(smbus->adapter.name),
 		 "PA Semi SMBus adapter (%s)", dev_name(smbus->dev));
 	smbus->adapter.algo = &smbus_algorithm;
+	smbus->adapter.quirks = &pasemi_i2c_quirks;
 	smbus->adapter.algo_data = smbus;
 
 	/* set up the sysfs linkage to our parent device */
@@ -449,6 +465,13 @@ int pasemi_i2c_common_probe(struct pasemi_smbus *smbus)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(pasemi_i2c_common_probe);
+
+void pasemi_i2c_reinit(struct pasemi_smbus *smbus)
+{
+	reg_write(smbus, REG_IMASK, 0);
+	pasemi_reset(smbus);
+}
+EXPORT_SYMBOL_GPL(pasemi_i2c_reinit);
 
 irqreturn_t pasemi_irq_handler(int irq, void *dev_id)
 {

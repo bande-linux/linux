@@ -780,7 +780,8 @@ static int brcmf_pno_validate_pfn_results(void *data, u32 eventlen)
 	return 0;
 }
 
-static int brcmf_pno_get_result_info(void *data, int result_idx,
+static int brcmf_pno_get_result_info(struct brcmu_d11inf *d11inf,
+				     void *data, int result_idx,
 				     u8 (*ssid)[IEEE80211_MAX_SSID_LEN],
 				     u8 *ssid_len, u8 *channel,
 				     enum nl80211_band *band)
@@ -802,7 +803,8 @@ static int brcmf_pno_get_result_info(void *data, int result_idx,
 	return 0;
 }
 
-static int brcmf_pno_get_result_info_v3(void *data, int result_idx,
+static int brcmf_pno_get_result_info_v3(struct brcmu_d11inf *d11inf,
+					void *data, int result_idx,
 					u8 (*ssid)[IEEE80211_MAX_SSID_LEN],
 					u8 *ssid_len, u8 *channel,
 					enum nl80211_band *band)
@@ -813,9 +815,21 @@ static int brcmf_pno_get_result_info_v3(void *data, int result_idx,
 		brcmf_get_netinfo_v3_array(scanresult);
 	struct brcmf_pno_net_info_v3_le *netinfo_v3 =
 		&netinfo_v3_start[result_idx];
+	struct brcmu_chan ch = { .chspec = le16_to_cpu(netinfo_v3->chanspec) };
 
-	*channel = CHSPEC_CHANNEL(netinfo_v3->chanspec);
-	*band = fwil_band_to_nl80211(CHSPEC_BAND(netinfo_v3->chanspec));
+	d11inf->decchspec(&ch);
+	*channel = ch.control_ch_num;
+	switch (ch.band) {
+	case BRCMU_CHAN_BAND_6G:
+		*band = NL80211_BAND_6GHZ;
+		break;
+	case BRCMU_CHAN_BAND_5G:
+		*band = NL80211_BAND_5GHZ;
+		break;
+	default:
+		*band = NL80211_BAND_2GHZ;
+		break;
+	}
 	*ssid_len = netinfo_v3->SSID_len;
 	if (netinfo_v3->SSID_len > IEEE80211_MAX_SSID_LEN)
 		*ssid_len = IEEE80211_MAX_SSID_LEN;

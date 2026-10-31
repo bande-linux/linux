@@ -1162,27 +1162,11 @@ static int snd_interval_step(struct snd_interval *i, unsigned int step)
  */
 int snd_interval_rate_bits(struct snd_interval *i, unsigned int mask)
 {
-	unsigned int k;
-	struct snd_interval mask_range;
-
 	if (!mask)
 		return -EINVAL;
 
-	snd_interval_any(&mask_range);
-	mask_range.min = UINT_MAX;
-	mask_range.max = 0;
-	for (k = 0; k < snd_pcm_known_rates.count; k++) {
-		unsigned int rate = snd_pcm_known_rates.list[k];
-		if (!(mask & (1 << k)))
-			continue;
-
-		if (rate > mask_range.max)
-			mask_range.max = rate;
-
-		if (rate < mask_range.min)
-			mask_range.min = rate;
-	}
-	return snd_interval_refine(i, &mask_range);
+	return snd_interval_list(i, snd_pcm_known_rates.count,
+				 snd_pcm_known_rates.list, mask);
 }
 EXPORT_SYMBOL(snd_interval_rate_bits);
 

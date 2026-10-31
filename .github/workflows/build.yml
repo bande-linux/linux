@@ -4,11 +4,20 @@ on:
   push:
     branches: [ unbound, 'prep/**' ]
   workflow_dispatch:
+    inputs:
+      dev:
+        description: Add unbound-dev.config (tracing, gadget console, VKMS)
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       ref:
         type: string
         default: unbound
+      dev:
+        description: Add unbound-dev.config (tracing, gadget console, VKMS)
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -30,15 +39,23 @@ jobs:
       - name: Configure
         run: |
           echo "KBUILD_BUILD_TIMESTAMP=@$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-          make defconfig unbound-headless.config
+          fragments=unbound-headless.config
+          if [ "$DEV" != false ] && [ -f arch/arm64/configs/unbound-dev.config ]; then
+            fragments="$fragments unbound-dev.config"
+          fi
+          make defconfig $fragments
           missing=0
-          while read -r line; do
-            case "$line" in
-              "# CONFIG_"*" is not set") grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
-              CONFIG_*) grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
-            esac
-          done < arch/arm64/configs/unbound-headless.config
+          for f in $fragments; do
+            while read -r line; do
+              case "$line" in
+                "# CONFIG_"*" is not set") grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
+                CONFIG_*) grep -qxF "$line" .config || { echo "not applied: $line"; missing=1; } ;;
+              esac
+            done < arch/arm64/configs/$f
+          done
           exit $missing
+        env:
+          DEV: ${{ inputs.dev }}
 
       - name: Build
         run: |

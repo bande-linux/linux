@@ -24,6 +24,18 @@
 #define APPLE_GPU_CACHELINE	16
 #define FRAC_16_16(mult, div)    (((mult) << 16) / (div))
 
+/*
+ * Bits per pixel for Interchange layout calculations. Unlike
+ * drm_format_info_bpp() this does not return 0 for formats with a
+ * non-integer bpp (e.g. the 3x1 block P030/P230 formats).
+ */
+static u32 apple_ix_bpp(const struct drm_format_info *fmt, u32 plane)
+{
+	return fmt->char_per_block[plane] * 8 /
+	       (drm_format_info_block_width(fmt, plane) *
+		drm_format_info_block_height(fmt, plane));
+}
+
 static struct dcp_image_layout
 apple_get_ix_layout(u32 width, u32 height, u32 bpp, u32 plane,  bool yuv)
 {
@@ -154,7 +166,7 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 
 			u32 width = drm_format_info_plane_width(fb->format, fb->width, i);
 			u32 height = drm_format_info_plane_height(fb->format, fb->height, i);
-			u32 bpp = drm_format_info_bpp(fb->format, i);
+			u32 bpp = apple_ix_bpp(fb->format, i);
 
 			layout = apple_get_ix_layout(width, height, bpp, i,
 						     fb->format->is_yuv);
@@ -316,13 +328,13 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	struct drm_framebuffer *fb = base->fb;
 	const struct drm_format_info *fmt = fb->format;
 	/*
-	 * DCP doesn't support XBGR8 / XRGB8 / XBGR2101010 natively. Blending as
+	 * DCP doesn't support XBGR8 / XRGB8 / XRGB2101010 natively. Blending as
 	 * pre-multiplied alpha with a black background can be used as
 	 * workaround for the bottommost plane.
 	 */
 	if (fmt->format == DRM_FORMAT_XRGB8888 ||
 	    fmt->format == DRM_FORMAT_XBGR8888 ||
-	    fmt->format == DRM_FORMAT_XBGR2101010)
+	    fmt->format == DRM_FORMAT_XRGB2101010)
 		is_premultiplied = true;
 	else if (fmt->has_alpha)
 		is_premultiplied = base->pixel_blend_mode == DRM_MODE_BLEND_PREMULTI;
@@ -372,7 +384,7 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
 			struct dcp_image_layout layout;
 
-			bpp = fmt->char_per_block[i] * 8 / (bw * bh);
+			bpp = apple_ix_bpp(fmt, i);
 			layout = apple_get_ix_layout(width, height, bpp, i, fmt->is_yuv);
 
 			surf->planes[i].tile_w = layout.tile_w;
