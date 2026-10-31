@@ -25,6 +25,7 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <sound/core.h>
 #include <sound/jack.h>
 #include <sound/pcm.h>
@@ -255,6 +256,51 @@ static unsigned int macaudio_vlimit_count(struct macaudio_snd_data *ma)
 	return count;
 }
 
+/*
+ * Write the cached value of every speaker volume register out to the
+ * amplifier. regmap updates its cache before it writes the device, so
+ * after a failed write the cache can hold a value the amplifier never got,
+ * and capping through the controls would then find nothing to write. In
+ * cache-only mode (suspend) this only marks the cache dirty, and the value
+ * goes out at resume.
+ */
+static int macaudio_vlimit_sync(struct macaudio_snd_data *ma)
+{
+	struct snd_soc_component *component;
+	struct soc_mixer_control *mc;
+	struct snd_kcontrol *kctl;
+	unsigned int val;
+	int ret;
+
+	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
+		if (!macaudio_is_speaker_volume(ma, kctl))
+			continue;
+
+		/* Only component controls have a component as private data */
+		if (kctl->get != snd_soc_get_volsw &&
+		    kctl->get != snd_soc_get_volsw_sx)
+			return -EINVAL;
+
+		component = snd_kcontrol_chip(kctl);
+		mc = (struct soc_mixer_control *)kctl->private_value;
+		if (!component->regmap)
+			return -EINVAL;
+
+		ret = regmap_read(component->regmap, mc->reg, &val);
+		if (!ret)
+			ret = regmap_write(component->regmap, mc->reg, val);
+		if (!ret && snd_soc_volsw_is_stereo(mc)) {
+			ret = regmap_read(component->regmap, mc->rreg, &val);
+			if (!ret)
+				ret = regmap_write(component->regmap, mc->rreg, val);
+		}
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 {
 	int ret, max;
@@ -286,6 +332,12 @@ static int macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 	ret = snd_soc_limit_volume(&ma->card, name, max);
 	if (ret < 0)
 		return ret;
+
+	if (!unlock) {
+		ret = macaudio_vlimit_sync(ma);
+		if (ret < 0)
+			return ret;
+	}
 
 	return macaudio_vlimit_count(ma) == ma->speaker_volume_count ? 0 : -ENODEV;
 }
@@ -321,9 +373,8 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		return;
 
 	/*
-	 * A failed cap is final until the card is bound again: the register
-	 * cache already holds the capped value, so a retry would find
-	 * nothing to write and report success with the amplifier unchanged.
+	 * A failed cap is final until the card is bound again: the state of
+	 * the amplifiers is unknown, so never unlock on a later ping.
 	 */
 	if (ma->speaker_volume_lock_failed)
 		return;
@@ -375,7 +426,7 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		dev_err(ma->card.dev,
 			"Failed to lock speaker volumes: %d, speakers disabled until the card is bound again\n",
 			ret);
-		/* macaudio_be_trigger() refuses to start the speakers from here on */
+		/* The speaker backend and its frontends refuse to run from here on */
 		WRITE_ONCE(ma->speaker_volume_lock_failed, true);
 		ma->speaker_volume_was_locked = true;
 		if (ma->speaker_volume_unlocked) {
@@ -1052,13 +1103,70 @@ static int macaudio_be_trigger(struct snd_pcm_substream *substream, int cmd)
 	return 0;
 }
 
+/*
+ * A frontend routed to the speakers must not prepare or start while the
+ * speaker volumes could not be capped either: its DAI starts before the
+ * backend's trigger could refuse, and a backend already prepared is not
+ * prepared again.
+ */
+static int macaudio_fe_check_speakers(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dpcm *dpcm;
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK ||
+	    !READ_ONCE(ma->speaker_volume_lock_failed))
+		return 0;
+
+	for_each_dpcm_be(rtd, SNDRV_PCM_STREAM_PLAYBACK, dpcm)
+		if (ma->link_props[dpcm->be->dai_link->id].is_speakers)
+			return -EIO;
+
+	return 0;
+}
+
+static int macaudio_fe_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		return macaudio_fe_check_speakers(substream);
+	default:
+		return 0;
+	}
+}
+
 static const struct snd_soc_ops macaudio_fe_ops = {
+	.prepare	= macaudio_fe_check_speakers,
+	.trigger	= macaudio_fe_trigger,
 	.startup	= macaudio_fe_startup,
 	.shutdown	= macaudio_dpcm_shutdown,
 	.hw_params	= macaudio_fe_hw_params,
 };
 
+/*
+ * While the speaker volumes could not be capped, refuse the speaker
+ * backend before its DAIs start or the amplifiers are unmuted, not only in
+ * the trigger.
+ */
+static int macaudio_be_check_speakers(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(rtd->card);
+	struct macaudio_link_props *props = &ma->link_props[rtd->dai_link->id];
+
+	if (props->is_speakers && substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    READ_ONCE(ma->speaker_volume_lock_failed))
+		return -EIO;
+
+	return 0;
+}
+
 static const struct snd_soc_ops macaudio_be_ops = {
+	.startup	= macaudio_be_check_speakers,
+	.prepare	= macaudio_be_check_speakers,
 	.hw_free	= macaudio_be_hw_free,
 	.shutdown	= macaudio_dpcm_shutdown,
 	.hw_params	= macaudio_dpcm_hw_params,
