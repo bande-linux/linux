@@ -278,15 +278,6 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
 		goto out_free_table;
 	}
 
-	/*
-	 * The turbo-mode OPPs are the top of the range the SoC normally runs
-	 * at. Start a new policy with boost enabled, so that cpuinfo.max_freq
-	 * and the reference frequency derived from it when the policy is
-	 * created include them. A policy coming back online keeps its setting.
-	 */
-	if (!policy->boost_supported)
-		policy->boost_enabled = cpufreq_boost_enabled();
-
 	/* Get OPP levels (p-state indexes) and stash them in driver_data */
 	for (i = 0; freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
 		unsigned long rate = freq_table[i].frequency * 1000UL + 999;
@@ -350,7 +341,6 @@ static struct cpufreq_driver apple_soc_cpufreq_driver = {
 	.fast_switch	= apple_soc_cpufreq_fast_switch,
 	.register_em	= cpufreq_register_em_with_opp,
 	.set_boost	= cpufreq_boost_set_sw,
-	.boost_enabled	= true,
 	.suspend	= cpufreq_generic_suspend,
 };
 
