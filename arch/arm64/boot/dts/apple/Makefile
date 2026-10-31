@@ -96,6 +96,9 @@ dtb-$(CONFIG_ARCH_APPLE) += t6034-j514m.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t6034-j516m.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8112-j413.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8112-j415.dtb
+# Bring-up only, not built or installed by default (only with OF_ALL_DTBS):
+# the boot payload holds every installed j473 dtb and the loader picks one.
+dtb- += t8112-j473-dpalt.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8112-j473.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8112-j493.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8122-j433.dtb
