@@ -215,3 +215,70 @@
 };
 
 #include "hwmon-mini.dtsi"
+
+/*
+ * SoC die sensors. The SMC keys differ between machines with the same SoC,
+ * so these are described per board.
+ */
+&smc_hwmon {
+	/* Maximum over the P-core sensors below */
+	temperature-TCMb {
+		apple,key-id = "TCMb";
+		label = "CPU Die Max Temp";
+	};
+
+	temperature-Tp01 {
+		apple,key-id = "Tp01";
+		label = "P-core 0 Die Temp A";
+	};
+
+	temperature-Tp05 {
+		apple,key-id = "Tp05";
+		label = "P-core 0 Die Temp B";
+	};
+
+	temperature-Tp09 {
+		apple,key-id = "Tp09";
+		label = "P-core 1 Die Temp A";
+	};
+
+	temperature-Tp0D {
+		apple,key-id = "Tp0D";
+		label = "P-core 1 Die Temp B";
+	};
+
+	temperature-Tp0f {
+		apple,key-id = "Tp0f";
+		label = "P-core 2 Die Temp A";
+	};
+
+	temperature-Tp0j {
+		apple,key-id = "Tp0j";
+		label = "P-core 2 Die Temp B";
+	};
+
+	temperature-Tp0n {
+		apple,key-id = "Tp0n";
+		label = "P-core 3 Die Temp A";
+	};
+
+	temperature-Tp0r {
+		apple,key-id = "Tp0r";
+		label = "P-core 3 Die Temp B";
+	};
+
+	temperature-Tg0f {
+		apple,key-id = "Tg0f";
+		label = "GPU Die Temp 1";
+	};
+
+	temperature-Tg0n {
+		apple,key-id = "Tg0n";
+		label = "GPU Die Temp 2";
+	};
+
+	temperature-Tg0r {
+		apple,key-id = "Tg0r";
+		label = "GPU Die Temp 3";
+	};
+};
