@@ -6,42 +6,42 @@ on:
   workflow_dispatch:
     inputs:
       dev:
-        description: Add unbound-dev.config (tracing, gadget console, VKMS)
+        description: Add bande-dev.config (tracing, gadget console, VKMS)
         type: boolean
         default: true
   workflow_call:
     inputs:
       ref:
         type: string
-        default: unbound
+        default: bande
       dev:
-        description: Add unbound-dev.config (tracing, gadget console, VKMS)
+        description: Add bande-dev.config (tracing, gadget console, VKMS)
         type: boolean
         default: true
 
 jobs:
   build:
-    runs-on: [self-hosted, unbound]
+    runs-on: [self-hosted, bande]
     timeout-minutes: 120
 
     env:
       MAKEFLAGS: -j8
-      KBUILD_BUILD_USER: unbound
+      KBUILD_BUILD_USER: bande
       KBUILD_BUILD_HOST: ci
 
     steps:
       - uses: actions/checkout@v7
         with:
-          repository: unbound-linux/linux
+          repository: bande-linux/linux
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 1
 
       - name: Configure
         run: |
           echo "KBUILD_BUILD_TIMESTAMP=@$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-          fragments=unbound-headless.config
-          if [ "$DEV" != false ] && [ -f arch/arm64/configs/unbound-dev.config ]; then
-            fragments="$fragments unbound-dev.config"
+          fragments=bande-headless.config
+          if [ "$DEV" != false ] && [ -f arch/arm64/configs/bande-dev.config ]; then
+            fragments="$fragments bande-dev.config"
           fi
           make defconfig $fragments
           missing=0
