@@ -1265,6 +1265,7 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
 	struct snd_soc_pcm_runtime *rtd;
 	struct snd_soc_dai *dai;
+	unsigned int count;
 	int ret, i;
 
 	/* Add the dynamic DAPM routes */
@@ -1300,13 +1301,18 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 			return dev_err_probe(card->dev, -ENODEV,
 					     "No speaker volume unlock control\n");
 
+		count = 0;
 		for_each_card_rtds(card, rtd)
 			if (rtd->dai_link->no_pcm &&
 			    ma->link_props[rtd->dai_link->id].is_speakers)
-				ma->speaker_volume_count += rtd->dai_link->num_codecs;
+				count += rtd->dai_link->num_codecs;
 
 		guard(rwsem_read)(&card->snd_card->controls_rwsem);
 		guard(mutex)(&ma->volume_lock_mutex);
+		/* ma outlives the card: start every bind from the locked state */
+		ma->speaker_volume_count = count;
+		ma->speaker_volume_unlocked = false;
+		WRITE_ONCE(ma->speaker_volume_lock_failed, false);
 		ret = macaudio_vlimit_unlock(ma, false);
 		if (ret < 0)
 			return dev_err_probe(card->dev, ret,
