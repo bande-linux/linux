@@ -509,7 +509,7 @@ static const struct avd_variant avd_t8112_variant = {
 		[AVD_CODEC_VP9] = 1,
 	},
 	.fifo_slots = 15,
-	.capabilities = AVD_CAPABILITY_H264,
+	.capabilities = AVD_CAPABILITY_HEVC | AVD_CAPABILITY_H264,
 	.fw_name = "apple/avd-fw-v3-t1.bin",
 	.vp_slot_offset = 0xc,
 	.submit_offset = 0x30,

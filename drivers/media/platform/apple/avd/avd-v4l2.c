@@ -100,6 +100,62 @@ void avd_reset_decoded_fmt(struct avd_ctx *ctx)
 	avd_fill_decoded_pixfmt(ctx, &f->fmt.pix_mp, &ctx->layout);
 }
 
+static const struct v4l2_ctrl_config avd_hevc_ctrl_descs[] = {
+	{
+		.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+		.flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY,
+		.type = V4L2_CTRL_TYPE_HEVC_SLICE_PARAMS,
+		.dims = { 600 },
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_SPS,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_PPS,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_DECODE_MODE,
+		.min = V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,
+		.max = V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,
+		.def = V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_START_CODE,
+		.min = V4L2_STATELESS_HEVC_START_CODE_NONE,
+		.max = V4L2_STATELESS_HEVC_START_CODE_NONE,
+		.def = V4L2_STATELESS_HEVC_START_CODE_NONE,
+	},
+	{
+		.id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
+		.flags = V4L2_CTRL_FLAG_DYNAMIC_ARRAY,
+		.dims = { 256 },
+		.max = 0xffffffff,
+		.step = 1,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
+		.min = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN,
+		.max = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_STILL_PICTURE,
+		.def = V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDEO_HEVC_LEVEL,
+		.min = V4L2_MPEG_VIDEO_HEVC_LEVEL_1,
+		.max = V4L2_MPEG_VIDEO_HEVC_LEVEL_5_1,
+	},
+};
+
+static const struct avd_ctrls avd_hevc_ctrls = {
+	.ctrls = avd_hevc_ctrl_descs,
+	.num_ctrls = ARRAY_SIZE(avd_hevc_ctrl_descs),
+};
+
 static const struct v4l2_ctrl_h264_sps avd_h264_default_sps = {
 	.chroma_format_idc = 1,
 	.flags = V4L2_H264_SPS_FLAG_FRAME_MBS_ONLY,
@@ -158,6 +214,21 @@ static const struct avd_ctrls avd_h264_ctrls = {
 
 /* Level 5.1 area (36864 MBs, 8912896 samples) at 4096 wide; not a height limit. */
 static const struct avd_coded_fmt_desc avd_coded_fmts[] = {
+	{
+		.fourcc = V4L2_PIX_FMT_HEVC_SLICE,
+		.frmsize = {
+			.min_width = AVD_MIN_SIZE,
+			.max_width = AVD_MAX_SIZE,
+			.step_width = 1,
+			.min_height = AVD_MIN_SIZE,
+			.max_height = 2176,
+			.step_height = 1,
+		},
+		.ctrls = &avd_hevc_ctrls,
+		.ops = &avd_hevc_fmt_ops,
+		.frame_ctrl = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+		.capability = AVD_CAPABILITY_HEVC,
+	},
 	{
 		.fourcc = V4L2_PIX_FMT_H264_SLICE,
 		.frmsize = {
