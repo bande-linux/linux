@@ -716,7 +716,7 @@ static void _dcp_poweron(struct apple_dcp *dcp, bool open_client)
 static bool dcp_publish_wait_done(struct apple_dcp *dcp, u32 seq)
 {
 	return READ_ONCE(dcp->publish_seq) != seq || READ_ONCE(dcp->powered) ||
-	       READ_ONCE(dcp->stopping);
+	       READ_ONCE(dcp->stopping) || READ_ONCE(dcp->crashed);
 }
 
 static void dcp_wake_publish_waiters(struct apple_dcp *dcp)
