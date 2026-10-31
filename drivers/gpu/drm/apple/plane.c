@@ -443,18 +443,17 @@ static const struct drm_plane_helper_funcs apple_plane_helper_funcs = {
 	.atomic_update	= apple_plane_atomic_update,
 };
 
-// Duplicate drm_atomic_helper_plane_reset but allocate struct apple_plane_state
-static void apple_plane_reset(struct drm_plane *plane)
+static struct drm_plane_state *apple_plane_create_state(struct drm_plane *plane)
 {
-        struct apple_plane_state *state = to_apple_plane_state(plane->state);
-	if (state)
-		__drm_atomic_helper_plane_destroy_state(&state->base);
+	struct apple_plane_state *state;
 
-	kfree(state);
-	plane->state = NULL;
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
-	if (state)
-		__drm_atomic_helper_plane_reset(plane, &state->base);
+	if (!state)
+		return ERR_PTR(-ENOMEM);
+
+	__drm_atomic_helper_plane_state_init(&state->base, plane);
+
+	return &state->base;
 }
 
 static struct drm_plane_state *
@@ -486,7 +485,7 @@ apple_plane_duplicate_state(struct drm_plane *plane)
 static const struct drm_plane_funcs apple_plane_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
-	.reset			= apple_plane_reset,
+	.atomic_create_state	= apple_plane_create_state,
 	.atomic_duplicate_state = apple_plane_duplicate_state,
 	// .atomic_destroy_state	= apple_plane_destroy_state,
 	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,

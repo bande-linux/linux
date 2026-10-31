@@ -24,7 +24,6 @@
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_gem_dma_helper.h>
@@ -215,7 +214,7 @@ static const struct drm_crtc_funcs apple_crtc_funcs = {
 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
 	.destroy		= apple_crtc_cleanup,
 	.page_flip		= drm_atomic_helper_page_flip,
-	.reset			= drm_atomic_helper_crtc_reset,
+	.atomic_create_state	= drm_atomic_helper_crtc_create_state,
 	.set_config             = drm_atomic_helper_set_config,
 	.set_crc_source		= apple_crtc_set_crc_source,
 	.verify_crc_source	= apple_crtc_verify_crc_source,
