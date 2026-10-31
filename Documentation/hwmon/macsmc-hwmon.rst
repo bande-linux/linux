@@ -22,6 +22,11 @@ the desktop Macs), sensors present on any given machine are described
 via Devicetree. The driver picks these up and registers them with
 hwmon when probed.
 
+Temperature sensors can also feed thermal zones. A thermal zone selects
+its sensor by SMC key (see the apple,smc-hwmon devicetree binding), so the
+zone stays on the same sensor whatever the order or number of the other
+sensors.
+
 Manual fan speed is supported via the fan_control module parameter. This
 is disabled by default and marked as unsafe, as it cannot be proven that
 the system will fail safe if overheating due to manual fan control being
