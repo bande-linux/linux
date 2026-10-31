@@ -52,7 +52,6 @@
 		interrupt-parent = <&pinctrl_ap>;
 		interrupts = <173 IRQ_TYPE_LEVEL_LOW>;
 		#sound-dai-cells = <0>;
-		cirrus,ts-inv = <1>;
 		sound-name-prefix = "Jack";
 	};
 };
