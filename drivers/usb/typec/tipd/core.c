@@ -23,6 +23,8 @@
 #include <linux/workqueue.h>
 #include <linux/firmware.h>
 
+#include <drm/drm_connector.h>
+
 #include "tps6598x.h"
 #include "trace.h"
 
@@ -220,6 +222,9 @@ struct cd321x {
 	struct cd321x_status update_status;
 	struct delayed_work update_work;
 	struct usb_pd_identity cur_partner_identity;
+
+	struct fwnode_handle *connector_fwnode;
+	bool dp_hpd; /* HPD high was reported to DRM */
 };
 
 static enum power_supply_property tps6598x_psy_props[] = {
@@ -834,6 +839,26 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 	cd321x->state.data = NULL;
 }
 
+/*
+ * Forward the DisplayPort HPD state to the DRM connector that claims this
+ * Type-C connector's fwnode, as the generic DisplayPort alternate mode driver
+ * does for an embedded DisplayPort connector. DRM keeps the connected state
+ * for a connector that registers later.
+ */
+static void cd321x_dp_hpd_notify(struct cd321x *cd321x, bool hpd)
+{
+	struct tps6598x *tps = &cd321x->tps;
+
+	if (!IS_ENABLED(CONFIG_DRM))
+		return;
+
+	dev_dbg(tps->dev, "DisplayPort HPD %s\n", hpd ? "high" : "low");
+	drm_connector_oob_hotplug_event(cd321x->connector_fwnode,
+					hpd ? connector_status_connected :
+					      connector_status_disconnected);
+	cd321x->dp_hpd = hpd;
+}
+
 static void cd321x_update_work(struct work_struct *work)
 {
 	struct cd321x *cd321x = container_of(to_delayed_work(work),
@@ -853,6 +878,11 @@ static void cd321x_update_work(struct work_struct *work)
 
 	bool usb_connection = st.data_status &
 			      (TPS_DATA_STATUS_USB2_CONNECTION | TPS_DATA_STATUS_USB3_CONNECTION);
+
+	bool hpd = new_connected && (st.data_status & TPS_DATA_STATUS_DP_CONNECTION) &&
+		   (st.data_status & CD321X_DATA_STATUS_HPD_LEVEL);
+	bool hpd_bounced = st.data_status_changed & CD321X_DATA_STATUS_HPD_LEVEL;
+	bool mode_changed = cd321x_typec_mode_changed(cd321x, &st);
 
 	enum usb_role old_role = usb_role_switch_get_role(tps->role_sw);
 	enum usb_role new_role = USB_ROLE_NONE;
@@ -886,8 +916,16 @@ static void cd321x_update_work(struct work_struct *work)
 	 * and set it up again before the new role starts.
 	 */
 	bool stop_role = old_role != USB_ROLE_NONE &&
-		(new_role != old_role || was_disconnected ||
-		 cd321x_typec_mode_changed(cd321x, &st));
+		(new_role != old_role || was_disconnected || mode_changed);
+
+	/*
+	 * Report HPD low on any change of the mode, role or partner, and on a
+	 * bounce of the HPD level since the last update, which is a replug of
+	 * the sink.
+	 */
+	if (cd321x->dp_hpd &&
+	    (!hpd || hpd_bounced || partner_changed || stop_role || mode_changed))
+		cd321x_dp_hpd_notify(cd321x, false);
 
 	if (stop_role)
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
@@ -951,6 +989,10 @@ static void cd321x_update_work(struct work_struct *work)
 	usb_role_switch_set_role(tps->role_sw, new_role);
 
 	power_supply_changed(tps->psy);
+
+	/* DRM needs the PHY in DisplayPort mode, so report HPD high only now */
+	if (hpd && !cd321x->dp_hpd && cd321x->state.alt == cd321x->port_altmode_dp)
+		cd321x_dp_hpd_notify(cd321x, true);
 }
 
 static void cd321x_queue_status(struct cd321x *cd321x)
@@ -1437,6 +1479,8 @@ cd321x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 	cd321x->state.data = NULL;
 	typec_set_mode(tps->port, TYPEC_STATE_SAFE);
 
+	cd321x->connector_fwnode = fwnode_handle_get(fwnode);
+
 	return 0;
 
 err_unregister_altmodes:
@@ -1460,6 +1504,8 @@ cd321x_unregister_port(struct tps6598x *tps)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
+	fwnode_handle_put(cd321x->connector_fwnode);
+	cd321x->connector_fwnode = NULL;
 	typec_mux_put(cd321x->mux);
 	cd321x->mux = NULL;
 	typec_unregister_altmode(cd321x->port_altmode_dp);
@@ -1881,6 +1927,9 @@ static void cd321x_remove(struct tps6598x *tps)
 
 	/* Also keeps cd321x_dr_set() from queueing it again */
 	disable_delayed_work_sync(&cd321x->update_work);
+
+	if (cd321x->dp_hpd)
+		cd321x_dp_hpd_notify(cd321x, false);
 }
 
 static int tps6598x_probe(struct i2c_client *client)
