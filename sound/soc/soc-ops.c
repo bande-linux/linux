@@ -458,6 +458,24 @@ out:
 	return ret;
 }
 
+/**
+ * snd_soc_kctl_is_volsw - Check whether a control is a volsw control
+ * @kctl: the control
+ *
+ * A wildcard pattern can match controls of any type, including user
+ * controls; only volsw controls carry a struct soc_mixer_control in
+ * private_value.
+ *
+ * Return: true for a control using snd_soc_info_volsw() or
+ * snd_soc_info_volsw_sx(), false otherwise.
+ */
+bool snd_soc_kctl_is_volsw(struct snd_kcontrol *kctl)
+{
+	return kctl->info == snd_soc_info_volsw ||
+	       kctl->info == snd_soc_info_volsw_sx;
+}
+EXPORT_SYMBOL_GPL(snd_soc_kctl_is_volsw);
+
 static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 {
 	struct soc_mixer_control *mc = (struct soc_mixer_control *)kctl->private_value;
@@ -475,9 +493,9 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
  * @name: name pattern
  * @max: new maximum limit
  *
- * Finds controls matching the given name (which can be either a name
- * verbatim, or a pattern starting with the wildcard '*') and sets
- * a platform volume limit on them.
+ * Finds volsw controls matching the given name (which can be either a
+ * name verbatim, or a pattern starting with the wildcard '*') and sets
+ * a platform volume limit on them. Controls of other types are skipped.
  *
  * Return 0 on success, else error. At least one control needs to match
  * the pattern.
@@ -493,7 +511,7 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		return -EINVAL;
 
 	list_for_each_entry(kctl, &card->snd_card->controls, list) {
-		if (!snd_soc_control_matches(kctl, name))
+		if (!snd_soc_control_matches(kctl, name) || !snd_soc_kctl_is_volsw(kctl))
 			continue;
 
 		ret = soc_limit_volume(kctl, max);

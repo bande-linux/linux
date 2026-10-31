@@ -579,6 +579,7 @@ int snd_soc_put_volsw_sx(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol);
 bool snd_soc_control_matches(struct snd_kcontrol *kcontrol,
 	const char *pattern);
+bool snd_soc_kctl_is_volsw(struct snd_kcontrol *kctl);
 int snd_soc_limit_volume(struct snd_soc_card *card,
 	const char *name, int max);
 int snd_soc_deactivate_kctl(struct snd_soc_card *card,
