@@ -586,9 +586,7 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 		if (dcp_replace_modes(dcp, modes, nr_modes) && !dcp->main_display &&
 		    dcp->connector && dcp->connector->connected)
 			schedule_work(&dcp->connector->hotplug_wq);
-		complete_all(&dcp->timings_done);
-		WRITE_ONCE(dcp->publish_seq, dcp->publish_seq + 1);
-		wake_up_var(&dcp->publish_seq);
+		store_release_wake_up(&dcp->publish_seq, dcp->publish_seq + 1);
 
 		return parsed;
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
@@ -1078,7 +1076,7 @@ static void dcp_apply_hotplug(struct apple_dcp *dcp, bool connected)
 
 static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 {
-	bool deferred;
+	bool deferred, ignored;
 
 	/* DCP issues hotplug_gated callbacks after SetPowerState() calls on
 	 * devices with display (macbooks, imacs). This must not result in
@@ -1091,6 +1089,7 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 		return;
 
 	spin_lock(&dcp->hotplug_lock);
+	ignored = dcp->suspended;
 	deferred = dcp->during_modeset;
 	if (deferred) {
 		dcp->hotplug_deferred = true;
@@ -1098,7 +1097,7 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 	}
 	spin_unlock(&dcp->hotplug_lock);
 
-	if (!deferred)
+	if (!deferred && !ignored)
 		dcp_apply_hotplug(dcp, !!*connected);
 }
 
@@ -1247,9 +1246,6 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 		kref_put(&wait->refcount, release_wait_cookie);
 	}
 }
-
-/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
-#define DCP_PUBLISH_TIMEOUT msecs_to_jiffies(3000)
 
 static int dcp_set_mode(struct apple_dcp *dcp, u32 *result)
 {

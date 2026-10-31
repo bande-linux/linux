@@ -187,6 +187,9 @@ struct apple_dcp {
 	bool during_modeset;
 	bool hotplug_deferred;
 	bool hotplug_deferred_connected;
+	bool suspended;
+	u32 unplug_seq;
+	bool modeset_failed;
 	u32 publish_seq;
 	u32 connect_seq;
 	bool valid_mode;
@@ -272,7 +275,6 @@ struct apple_dcp {
 	bool stopping;
 	bool iomfb_on;
 	bool client_open;
-	struct completion timings_done;
 	struct work_struct sink_modes_wq;
 	struct work_struct hpd_resume_wq;
 	struct delayed_work release_wq;
@@ -281,6 +283,9 @@ struct apple_dcp {
 	u32 dptx_die;
 	int hdmi_hpd_irq;
 };
+
+/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
+#define DCP_PUBLISH_TIMEOUT msecs_to_jiffies(3000)
 
 void dcp_drm_crtc_page_flip(struct apple_dcp *dcp, ktime_t now);
 
