@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_APPLE_AVD
+	tristate "Apple Video Decoder driver"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on PM
+	depends on VIDEO_DEV
+	depends on V4L_MEM2MEM_DRIVERS
+	select MEDIA_CONTROLLER
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_H264
+	help
+	  Support for the Apple Video Decoder (AVD) of the Apple M2, a
+	  stateless video decoder. It needs the avd-fw coprocessor
+	  firmware.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called apple-avd.
