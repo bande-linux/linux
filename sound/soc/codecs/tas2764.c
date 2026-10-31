@@ -778,6 +778,17 @@ static const struct hwmon_chip_info tas2764_hwmon_chip_info = {
 	.info	= tas2764_hwmon_info,
 };
 
+/*
+ * Assert SDZ and stop register I/O until the next component probe, which
+ * reinitialises the register cache, deasserts SDZ and resets the chip.
+ */
+static void tas2764_hw_shutdown(struct tas2764_priv *tas2764)
+{
+	gpiod_set_value_cansleep(tas2764->sdz_gpio, 0);
+	regcache_cache_only(tas2764->regmap, true);
+	regcache_mark_dirty(tas2764->regmap);
+}
+
 static int tas2764_codec_probe(struct snd_soc_component *component)
 {
 	struct tas2764_priv *tas2764 = snd_soc_component_get_drvdata(component);
@@ -790,29 +801,30 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 		usleep_range(1000, 2000);
 	}
 
-	tas2764_reset(tas2764);
+	/* Leaves the cache-only mode a previous remove or failed probe set */
 	regmap_reinit_cache(tas2764->regmap, &tas2764_i2c_regmap);
+	tas2764_reset(tas2764);
 
 	if (tas2764->irq) {
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK0, 0x00);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK1, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK2, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK3, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK4, 0xff);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		ret = devm_request_threaded_irq(tas2764->dev, tas2764->irq, NULL, tas2764_irq,
 						IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW,
@@ -824,12 +836,12 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 	ret = snd_soc_component_update_bits(tas2764->component, TAS2764_TDM_CFG5,
 					    TAS2764_TDM_CFG5_VSNS_ENABLE, 0);
 	if (ret < 0)
-		return ret;
+		goto err_shutdown;
 
 	ret = snd_soc_component_update_bits(tas2764->component, TAS2764_TDM_CFG6,
 					    TAS2764_TDM_CFG6_ISNS_ENABLE, 0);
 	if (ret < 0)
-		return ret;
+		goto err_shutdown;
 
 	switch (tas2764->devid) {
 	case DEVID_SN012776:
@@ -837,7 +849,7 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 					TAS2764_PWR_CTRL_BOP_SRC,
 					TAS2764_PWR_CTRL_BOP_SRC);
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		for (i = 0; i < ARRAY_SIZE(sn012776_bop_presets); i++) {
 			ret = snd_soc_component_write(component,
@@ -845,14 +857,14 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 						sn012776_bop_presets[i]);
 
 			if (ret < 0)
-				return ret;
+				goto err_shutdown;
 		}
 
 		/* Apply all enabled Apple quirks */
 		ret = tas2764_apply_init_quirks(tas2764);
 
 		if (ret < 0)
-			return ret;
+			goto err_shutdown;
 
 		break;
 	default:
@@ -860,6 +872,17 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 	}
 
 	return 0;
+
+err_shutdown:
+	tas2764_hw_shutdown(tas2764);
+	return ret;
+}
+
+static void tas2764_codec_remove(struct snd_soc_component *component)
+{
+	struct tas2764_priv *tas2764 = snd_soc_component_get_drvdata(component);
+
+	tas2764_hw_shutdown(tas2764);
 }
 
 static DECLARE_TLV_DB_SCALE(tas2764_digital_tlv, 1100, 50, 0);
@@ -893,6 +916,7 @@ static const struct snd_kcontrol_new tas2764_snd_controls[] = {
 
 static const struct snd_soc_component_driver soc_component_driver_tas2764 = {
 	.probe			= tas2764_codec_probe,
+	.remove			= tas2764_codec_remove,
 	.suspend		= tas2764_codec_suspend,
 	.resume			= tas2764_codec_resume,
 	.controls		= tas2764_snd_controls,
