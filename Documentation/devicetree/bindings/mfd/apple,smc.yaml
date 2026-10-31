@@ -97,6 +97,7 @@ examples:
 
         hwmon {
           compatible = "apple,smc-hwmon";
+          #thermal-sensor-cells = <1>;
 
           current-ID0R {
             apple,key-id = "ID0R";
