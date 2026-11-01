@@ -10,6 +10,7 @@
 
 #include <linux/device.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 
 /* encodes a single 96bit message sent over the single channel */
 struct apple_mbox_msg {
@@ -29,7 +30,8 @@ struct apple_mbox {
 	spinlock_t rx_lock;
 	spinlock_t tx_lock;
 
-	struct completion tx_empty;
+	wait_queue_head_t tx_wait;
+	bool tx_irq_enabled;
 
 	/** Receive callback for incoming messages */
 	void (*rx)(struct apple_mbox *mbox, struct apple_mbox_msg msg, void *cookie);

@@ -30,6 +30,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 #include "mailbox.h"
 
 #define APPLE_ASC_MBOX_CONTROL_FULL BIT(16)
@@ -99,6 +100,12 @@ struct apple_mbox_hw {
 	unsigned int irq_bit_send_empty;
 };
 
+static bool apple_mbox_tx_full(struct apple_mbox *mbox)
+{
+	return readl_relaxed(mbox->regs + mbox->hw->a2i_control) &
+	       mbox->hw->control_full;
+}
+
 int apple_mbox_send(struct apple_mbox *mbox, const struct apple_mbox_msg msg,
 		    bool atomic)
 {
@@ -133,16 +140,17 @@ int apple_mbox_send(struct apple_mbox *mbox, const struct apple_mbox_msg msg,
 		 * If the FIFO is already empty before the ack it will fire again
 		 * immediately after the ack.
 		 */
-		if (mbox->hw->has_irq_controls) {
-			writel_relaxed(mbox->hw->irq_bit_send_empty,
-				       mbox->regs + mbox->hw->irq_ack);
+		if (!mbox->tx_irq_enabled) {
+			if (mbox->hw->has_irq_controls)
+				writel_relaxed(mbox->hw->irq_bit_send_empty,
+					       mbox->regs + mbox->hw->irq_ack);
+			mbox->tx_irq_enabled = true;
+			enable_irq(mbox->irq_send_empty);
 		}
-		enable_irq(mbox->irq_send_empty);
-		reinit_completion(&mbox->tx_empty);
 		spin_unlock_irqrestore(&mbox->tx_lock, flags);
 
-		t = wait_for_completion_interruptible_timeout(
-			&mbox->tx_empty,
+		t = wait_event_interruptible_timeout(
+			mbox->tx_wait, !apple_mbox_tx_full(mbox),
 			msecs_to_jiffies(APPLE_MBOX_TX_TIMEOUT));
 		if (t < 0)
 			return t;
@@ -175,8 +183,11 @@ static irqreturn_t apple_mbox_send_empty_irq(int irq, void *data)
 	 * it at the main controller again.
 	 */
 	spin_lock(&mbox->tx_lock);
-	disable_irq_nosync(mbox->irq_send_empty);
-	complete(&mbox->tx_empty);
+	if (mbox->tx_irq_enabled) {
+		disable_irq_nosync(mbox->irq_send_empty);
+		mbox->tx_irq_enabled = false;
+	}
+	wake_up_all(&mbox->tx_wait);
 	spin_unlock(&mbox->tx_lock);
 
 	return IRQ_HANDLED;
@@ -362,7 +373,7 @@ static int apple_mbox_probe(struct platform_device *pdev)
 
 	spin_lock_init(&mbox->rx_lock);
 	spin_lock_init(&mbox->tx_lock);
-	init_completion(&mbox->tx_empty);
+	init_waitqueue_head(&mbox->tx_wait);
 
 	irqname = devm_kasprintf(dev, GFP_KERNEL, "%s-recv", dev_name(dev));
 	if (!irqname)
