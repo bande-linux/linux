@@ -57,6 +57,7 @@ struct dcp_mem_descriptor {
 	dma_addr_t dva;
 	struct sg_table map;
 	u64 reg;
+	bool piodma_mapped;
 };
 
 /* Limit on call stack depth (arbitrary). Some nesting is required */
@@ -187,8 +188,14 @@ struct apple_dcp {
 	bool during_modeset;
 	bool hotplug_deferred;
 	bool hotplug_deferred_connected;
+	bool suspended;
+	u32 hotplug_seq;
+	bool modeset_failed;
+	unsigned int modeset_retries;
+	bool hotplug_pending;
 	u32 publish_seq;
 	u32 connect_seq;
+	bool publish_pending;
 	bool valid_mode;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
@@ -272,7 +279,6 @@ struct apple_dcp {
 	bool stopping;
 	bool iomfb_on;
 	bool client_open;
-	struct completion timings_done;
 	struct work_struct sink_modes_wq;
 	struct work_struct hpd_resume_wq;
 	struct delayed_work release_wq;
@@ -281,6 +287,9 @@ struct apple_dcp {
 	u32 dptx_die;
 	int hdmi_hpd_irq;
 };
+
+/* TimingElements arrived 1.1 s after the display was requested (j473 trace) */
+#define DCP_PUBLISH_TIMEOUT msecs_to_jiffies(3000)
 
 void dcp_drm_crtc_page_flip(struct apple_dcp *dcp, ktime_t now);
 

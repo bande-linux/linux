@@ -932,6 +932,8 @@ static void cd321x_update_work(struct work_struct *work)
 		tps->partner = typec_register_partner(tps->port, &desc);
 		if (IS_ERR(tps->partner)) {
 			dev_warn(tps->dev, "%s: failed to register partner\n", __func__);
+			/* Look disconnected so that the next update registers it again */
+			tps->partner = NULL;
 			return;
 		}
 
@@ -1872,7 +1874,8 @@ static void cd321x_remove(struct tps6598x *tps)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
-	cancel_delayed_work_sync(&cd321x->update_work);
+	/* Also keeps cd321x_dr_set() from queueing it again */
+	disable_delayed_work_sync(&cd321x->update_work);
 }
 
 static int tps6598x_probe(struct i2c_client *client)
@@ -2016,6 +2019,8 @@ static int tps6598x_probe(struct i2c_client *client)
 	return 0;
 
 err_disconnect:
+	if (tps->data->remove)
+		tps->data->remove(tps);
 	tps6598x_disconnect(tps, 0);
 err_unregister_port:
 	tps->data->unregister_port(tps);

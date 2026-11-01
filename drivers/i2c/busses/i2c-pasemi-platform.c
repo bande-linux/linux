@@ -104,8 +104,7 @@ static int pasemi_platform_i2c_resume_noirq(struct device *dev)
 {
 	struct pasemi_platform_i2c_data *data = dev_get_drvdata(dev);
 
-	/* The controller loses its configuration when its power domain is off. */
-	pasemi_i2c_reinit(&data->smbus);
+	pasemi_i2c_hw_init(&data->smbus);
 	i2c_mark_adapter_resumed(&data->smbus.adapter);
 
 	return 0;

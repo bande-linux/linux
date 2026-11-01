@@ -15,12 +15,56 @@ maintainers:
 
 properties:
   compatible:
-    items:
-      - enum:
-          - apple,j274-macaudio
-          - apple,j293-macaudio
-          - apple,j314-macaudio
-      - const: apple,macaudio
+    oneOf:
+      - items:
+          - enum:
+              - apple,j180-macaudio
+              - apple,j274-macaudio
+              - apple,j293-macaudio
+              - apple,j313-macaudio
+              - apple,j314-macaudio
+              - apple,j316-macaudio
+              - apple,j375-macaudio
+              - apple,j413-macaudio
+              - apple,j415-macaudio
+              - apple,j433-macaudio
+              - apple,j434-macaudio
+              - apple,j456-macaudio
+              - apple,j457-macaudio
+              - apple,j473-macaudio
+              - apple,j493-macaudio
+          - const: apple,macaudio
+      - items:
+          - enum:
+              - apple,j414-macaudio
+              - apple,j504-macaudio
+              - apple,j514-macaudio
+          - const: apple,j314-macaudio
+          - const: apple,macaudio
+      - items:
+          - enum:
+              - apple,j416-macaudio
+              - apple,j516-macaudio
+          - const: apple,j316-macaudio
+          - const: apple,macaudio
+      - items:
+          - enum:
+              - apple,j475-macaudio
+              - apple,j575-macaudio
+          - const: apple,j375-macaudio
+          - const: apple,macaudio
+      - items:
+          - const: apple,j613-macaudio
+          - const: apple,j413-macaudio
+          - const: apple,macaudio
+      - items:
+          - const: apple,j615-macaudio
+          - const: apple,j415-macaudio
+          - const: apple,macaudio
+      - items:
+          - const: apple,j474-macaudio
+          - const: apple,j473-macaudio
+          - const: apple,macaudio
 
   "#address-cells":
     const: 1
@@ -34,13 +78,43 @@ properties:
     $ref: /schemas/types.yaml#/definitions/string
 
 patternProperties:
-  "^dai-link(@[0-9a-f]+)?$":
+  "^dai-link@[0-9a-f]+$":
     description: |
       Node for each sound peripheral such as the speaker array, headphones jack,
       or microphone.
     type: object
 
     additionalProperties: false
+
+    patternProperties:
+      "^dai-tdm-idle-mode-[0-7]$":
+        description: |
+          How CODEC N of this link drives the TX slots in its
+          dai-tdm-slot-tx-idle-mask-N, slots of the shared data line in which
+          it does not transmit, so that they do not float. CODECs are numbered
+          across the link in codec sound-dai order.
+            zero: drive the slots low.
+            pulldown: weakly pull the slots low.
+        $ref: /schemas/types.yaml#/definitions/string
+        enum:
+          - zero
+          - pulldown
+
+      "^dai-tdm-slot-tx-idle-mask-[0-7]$":
+        description:
+          Bit mask of the TX slots on the data line that CODEC N drives as
+          dai-tdm-idle-mode-N says, bit 0 being slot 0.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+    dependentRequired:
+      dai-tdm-slot-tx-idle-mask-0: [ dai-tdm-idle-mode-0 ]
+      dai-tdm-slot-tx-idle-mask-1: [ dai-tdm-idle-mode-1 ]
+      dai-tdm-slot-tx-idle-mask-2: [ dai-tdm-idle-mode-2 ]
+      dai-tdm-slot-tx-idle-mask-3: [ dai-tdm-idle-mode-3 ]
+      dai-tdm-slot-tx-idle-mask-4: [ dai-tdm-idle-mode-4 ]
+      dai-tdm-slot-tx-idle-mask-5: [ dai-tdm-idle-mode-5 ]
+      dai-tdm-slot-tx-idle-mask-6: [ dai-tdm-idle-mode-6 ]
+      dai-tdm-slot-tx-idle-mask-7: [ dai-tdm-idle-mode-7 ]
 
     properties:
       reg:
@@ -99,6 +173,8 @@ patternProperties:
 required:
   - compatible
   - model
+  - "#address-cells"
+  - "#size-cells"
 
 additionalProperties: false
 

@@ -417,7 +417,6 @@ struct brcmf_pciedev_info {
 	bool irq_allocated;
 	bool irq_ready;
 	bool have_msi;
-	bool wowl_enabled;
 	u8 dma_idx_sz;
 	void *idxbuf;
 	u32 idxbuf_sz;
@@ -820,8 +819,6 @@ static void brcmf_pcie_attach(struct brcmf_pciedev_info *devinfo)
 	brcmf_pcie_write_pcie32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGADDR, 0x4e0);
 	config = brcmf_pcie_read_pcie32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGDATA);
 	brcmf_pcie_write_pcie32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGDATA, config);
-
-	device_wakeup_enable(&devinfo->pdev->dev);
 }
 
 
@@ -1657,14 +1654,9 @@ static int brcmf_pcie_rx_ctlpkt(struct device *dev, unsigned char *msg,
 }
 
 
-static void brcmf_pcie_wowl_config(struct device *dev, bool enabled)
+static void brcmf_pcie_set_wakeup(struct device *dev, bool enabled)
 {
-	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
-	struct brcmf_pciedev *buspub = bus_if->bus_priv.pcie;
-	struct brcmf_pciedev_info *devinfo = buspub->devinfo;
-
-	brcmf_dbg(PCIE, "Configuring WOWL, enabled=%d\n", enabled);
-	devinfo->wowl_enabled = enabled;
+	device_set_wakeup_enable(dev, enabled);
 }
 
 
@@ -1755,7 +1747,7 @@ static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
 	.stop = brcmf_pcie_down,
 	.txctl = brcmf_pcie_tx_ctlpkt,
 	.rxctl = brcmf_pcie_rx_ctlpkt,
-	.wowl_config = brcmf_pcie_wowl_config,
+	.set_wakeup = brcmf_pcie_set_wakeup,
 	.get_ramsize = brcmf_pcie_get_ramsize,
 	.get_memdump = brcmf_pcie_get_memdump,
 	.get_blob = brcmf_pcie_get_blob,
