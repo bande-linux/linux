@@ -1,3 +1,16 @@
+Bande: legacy repository
+========================
+
+This repository is legacy. It is kept for its history only, and no development
+happens here any more. Bande's kernel for Apple silicon Macs is now Debian's
+kernel with our patches, maintained in https://github.com/bande-linux/kernel
+(patches/<series>/; see its README, "Changing a patch").
+
+This branch, main, is the last complete Mac kernel developed here: prep/hw-test6
+(2f4f980145b0), with the CI removed. Every Mac change in it was ported to
+bande-linux/kernel on 2026-11-01. The other branches were deleted; their names and
+commits are recorded in the Bande archive notes.
+
 Linux kernel
 ============
 
